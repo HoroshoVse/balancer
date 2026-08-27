@@ -2,22 +2,21 @@ version: '3.8'
 
 services:
   backend:
-    build: 
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ghcr.io/horoshovse/balancer-backend:latest
     ports:
-      - "8000:80"
-      - "8443:443"
-      - "8443:443/udp" # for QUIC/HTTP3
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # for QUIC/HTTP3
       - "8080:8080" # API & UI port
     volumes:
       - ./backend/certs:/app/certs
       - ./backend/data:/app/data
     environment:
       - DB_DSN=postgres://balancer:balancer@db:5432/balancer?sslmode=disable
-      - DEV_MODE=true
+      - DEV_MODE=false # Disabled dev mode for production
     depends_on:
       - db
+    restart: unless-stopped
 
   db:
     image: postgres:15-alpine
@@ -29,13 +28,13 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "54432:5432"
+    restart: unless-stopped
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
+    image: ghcr.io/horoshovse/balancer-frontend:latest
     ports:
       - "3000:80"
+    restart: unless-stopped
 
 volumes:
   postgres_data:
