@@ -30,7 +30,8 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/v1/auth/login", s.corsMiddleware(s.login))
 
 	// Protected Routes
-	mux.HandleFunc("/api/v1/load-balancers", s.corsMiddleware(AuthMiddleware(s.getLoadBalancers)))
+	mux.HandleFunc("/api/v1/load-balancers", s.corsMiddleware(AuthMiddleware(s.handleLoadBalancers)))
+	mux.HandleFunc("/api/v1/load-balancers/delete", s.corsMiddleware(AuthMiddleware(s.deleteLoadBalancer)))
 	mux.HandleFunc("/api/v1/backends", s.corsMiddleware(AuthMiddleware(s.getBackends)))
 	mux.HandleFunc("/api/v1/metrics/overview", s.corsMiddleware(AuthMiddleware(s.getMetricsOverview)))
 	mux.HandleFunc("/api/v1/settings", s.corsMiddleware(AuthMiddleware(s.getSettings)))
@@ -119,6 +120,18 @@ func (s *Server) getMetricsOverview(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(data)
 }
 
+func (s *Server) handleLoadBalancers(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		s.getLoadBalancers(w, r)
+		return
+	}
+	if r.Method == "POST" {
+		s.createLoadBalancer(w, r)
+		return
+	}
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
 func (s *Server) getLoadBalancers(w http.ResponseWriter, r *http.Request) {
 	var lbs []models.LoadBalancer
 	if err := s.db.Preload("BackendGroup.Backends").Find(&lbs).Error; err != nil {
@@ -132,4 +145,47 @@ func (s *Server) getLoadBalancers(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(lbs)
+}
+
+func (s *Server) createLoadBalancer(w http.ResponseWriter, r *http.Request) {
+	var lb models.LoadBalancer
+	if err := json.NewDecoder(r.Body).Decode(&lb); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := s.db.Create(&lb).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Reload config asynchronously so API returns quickly
+	go func() {
+		if err := s.engine.ReloadConfig(); err != nil {
+			log.Printf("Failed to reload config: %v", err)
+		}
+	}()
+
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) deleteLoadBalancer(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "Missing id", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.db.Delete(&models.LoadBalancer{}, id).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	go func() {
+		if err := s.engine.ReloadConfig(); err != nil {
+			log.Printf("Failed to reload config: %v", err)
+		}
+	}()
+
+	w.WriteHeader(http.StatusOK)
 }
