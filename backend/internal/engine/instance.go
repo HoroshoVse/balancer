@@ -27,8 +27,9 @@ import (
 )
 
 type LoadBalancerInstance struct {
-	Config   models.LoadBalancer
-	db       *gorm.DB
+	Config        models.LoadBalancer
+	db            *gorm.DB
+	healthChecker *HealthChecker
 	
 	httpServer  *http.Server
 	httpsServer *http.Server
@@ -41,10 +42,11 @@ type LoadBalancerInstance struct {
 	cancel   context.CancelFunc
 }
 
-func NewLoadBalancerInstance(config models.LoadBalancer, db *gorm.DB) *LoadBalancerInstance {
+func NewLoadBalancerInstance(config models.LoadBalancer, db *gorm.DB, hc *HealthChecker) *LoadBalancerInstance {
 	inst := &LoadBalancerInstance{
-		Config: config,
-		db:     db,
+		Config:        config,
+		db:            db,
+		healthChecker: hc,
 	}
 
 	switch config.Algorithm {
@@ -56,6 +58,8 @@ func NewLoadBalancerInstance(config models.LoadBalancer, db *gorm.DB) *LoadBalan
 		inst.strategy = &WeightedRoundRobin{}
 	case "ip_hash":
 		inst.strategy = &IPHash{}
+	case "failover":
+		inst.strategy = &Failover{}
 	default:
 		inst.strategy = &RoundRobin{} // Default
 	}
@@ -76,14 +80,38 @@ func (l *LoadBalancerInstance) Start() error {
 }
 
 func (l *LoadBalancerInstance) updateBackends() {
-	var activeBackends []*models.BackendServer
+	var primaryBackends []*models.BackendServer
+	var backupBackends []*models.BackendServer
+
 	for i := range l.Config.BackendGroup.Backends {
 		b := &l.Config.BackendGroup.Backends[i]
-		if b.Enabled {
-			activeBackends = append(activeBackends, b)
+		if !b.Enabled {
+			continue
+		}
+
+		// Check health status
+		if l.healthChecker != nil && !l.healthChecker.IsHealthy(b.ID) {
+			continue // skip unhealthy backends
+		}
+
+		if b.Backup {
+			backupBackends = append(backupBackends, b)
+		} else {
+			primaryBackends = append(primaryBackends, b)
 		}
 	}
-	l.backends.Store(activeBackends)
+
+	// Failover logic: use primaries if any are healthy, otherwise use backups
+	if len(primaryBackends) > 0 {
+		l.backends.Store(primaryBackends)
+	} else if len(backupBackends) > 0 {
+		log.Printf("[FAILOVER] %s: all primary backends DOWN, switching to backup nodes", l.Config.Name)
+		l.backends.Store(backupBackends)
+	} else {
+		// All backends down
+		log.Printf("[CRITICAL] %s: ALL backends (primary + backup) are DOWN", l.Config.Name)
+		l.backends.Store([]*models.BackendServer{})
+	}
 }
 
 func (l *LoadBalancerInstance) startTCP(ctx context.Context) error {

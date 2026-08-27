@@ -20,6 +20,7 @@ type HealthChecker struct {
 	cancel context.CancelFunc
 	mu     sync.RWMutex
 	states map[uint]bool
+	onChange func() // callback when health state changes
 }
 
 func NewHealthChecker(db *gorm.DB) *HealthChecker {
@@ -27,6 +28,20 @@ func NewHealthChecker(db *gorm.DB) *HealthChecker {
 		db:     db,
 		states: make(map[uint]bool),
 	}
+}
+
+func (hc *HealthChecker) SetOnChange(fn func()) {
+	hc.onChange = fn
+}
+
+func (hc *HealthChecker) IsHealthy(backendID uint) bool {
+	hc.mu.RLock()
+	defer hc.mu.RUnlock()
+	state, exists := hc.states[backendID]
+	if !exists {
+		return true // assume healthy if not yet checked
+	}
+	return state
 }
 
 func (hc *HealthChecker) Start() {
@@ -136,6 +151,9 @@ func (hc *HealthChecker) checkBackend(group models.BackendGroup, backend models.
 		
 		msg := fmt.Sprintf("Backend **%s** (%s) is now %s", backend.Name, target, statusStr)
 		hc.sendTelegramAlert(msg)
+		if hc.onChange != nil {
+			go hc.onChange()
+		}
 	} else {
 		hc.mu.Unlock()
 	}

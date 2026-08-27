@@ -115,3 +115,19 @@ func (h *IPHash) Next(backends []*models.BackendServer, clientIP string) *models
 	idx := hash % uint32(len(backends))
 	return backends[idx]
 }
+
+// Failover Strategy (Active-Passive)
+// Always returns the first backend in the list.
+// Combined with the updateBackends() failover logic, this means:
+// - Traffic goes to the first healthy primary node
+// - If all primaries are down, traffic goes to the first healthy backup node
+// - When a primary recovers, traffic returns to it automatically
+type Failover struct{}
+
+func (f *Failover) Next(backends []*models.BackendServer, clientIP string) *models.BackendServer {
+	if len(backends) == 0 {
+		return nil
+	}
+	return backends[0]
+}
+

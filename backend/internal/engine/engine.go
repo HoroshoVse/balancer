@@ -26,6 +26,13 @@ func NewEngine(db *gorm.DB) *Engine {
 func (e *Engine) Start() error {
 	log.Println("Starting Engine...")
 	e.healthChecker.Start()
+	e.healthChecker.SetOnChange(func() {
+		e.mu.RLock()
+		defer e.mu.RUnlock()
+		for _, inst := range e.activeBalancers {
+			inst.updateBackends()
+		}
+	})
 	return e.ReloadConfig()
 }
 
@@ -46,7 +53,7 @@ func (e *Engine) ReloadConfig() error {
 	e.activeBalancers = make(map[uint]*LoadBalancerInstance)
 
 	for _, lb := range lbs {
-		inst := NewLoadBalancerInstance(lb, e.db)
+		inst := NewLoadBalancerInstance(lb, e.db, e.healthChecker)
 		e.activeBalancers[lb.ID] = inst
 		go func(l models.LoadBalancer, instance *LoadBalancerInstance) {
 			if err := instance.Start(); err != nil {

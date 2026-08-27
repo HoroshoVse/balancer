@@ -235,6 +235,7 @@ export default function LoadBalancers() {
                       <option value="round_robin">Round Robin</option>
                       <option value="least_conn">Least Connections</option>
                       <option value="ip_hash">IP Hash</option>
+                      <option value="failover">Failover (Active-Passive)</option>
                     </select>
                   </div>
                 </div>
@@ -349,9 +350,9 @@ export default function LoadBalancers() {
                           <input type="checkbox" className={checkboxClass} checked={b.enabled} onChange={e => updateBackend(i, "enabled", e.target.checked)} />
                           Enabled
                         </label>
-                        <label className="flex items-center gap-2 text-xs">
+                        <label className="flex items-center gap-2 text-xs" title="Backup nodes only receive traffic when ALL primary nodes are down">
                           <input type="checkbox" className={checkboxClass} checked={b.backup} onChange={e => updateBackend(i, "backup", e.target.checked)} />
-                          Backup
+                          Backup (standby)
                         </label>
                       </div>
                     </div>
