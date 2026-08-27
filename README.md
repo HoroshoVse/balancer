@@ -58,7 +58,7 @@ docker compose exec backend ./balancer-cli users list
 **Добавление нового пользователя:**
 ```bash
 docker compose exec backend ./balancer-cli users add <username> <password> [role]
-# Пример: docker compose exec backend ./balancer-cli users add developer qwerty1234 Admin
+
 ```
 
 **Смена пароля:**
