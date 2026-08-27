@@ -303,7 +303,7 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			req.URL.Scheme = scheme
 			req.URL.Host = fmt.Sprintf("%s:%d", target.Address, target.Port)
 			req.URL.Path = req.URL.Path
-			req.Host = req.URL.Host
+			// Preserve the original req.Host so the backend knows what domain was requested
 
 			if err == nil {
 				req.Header.Set("X-Real-IP", clientIP)
@@ -481,7 +481,16 @@ func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// Create a custom transport for this request if proxy protocol is enabled
 	// Normally we would cache this transport, but for simplicity we do it here
 	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	
+	hostWithoutPort, _, _ := net.SplitHostPort(req.Host)
+	if hostWithoutPort == "" {
+		hostWithoutPort = req.Host
+	}
+	
+	tr.TLSClientConfig = &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         hostWithoutPort, // pass original SNI to the backend
+	}
 	if t.proxyProtocolEnabled {
 		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			conn, err := (&net.Dialer{

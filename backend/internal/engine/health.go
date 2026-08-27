@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"crypto/tls"
 	"sync"
 	"time"
 
@@ -106,7 +107,13 @@ func (hc *HealthChecker) checkBackend(backend models.BackendServer) {
 		}
 		url := fmt.Sprintf("%s://%s%s", scheme, target, path)
 		
-		client := http.Client{Timeout: timeout}
+		tr := &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		client := http.Client{
+			Timeout:   timeout,
+			Transport: tr,
+		}
 		resp, err := client.Get(url)
 		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 400 {
 			isUp = true
