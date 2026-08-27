@@ -82,3 +82,13 @@ func (e *Engine) Stop() {
 func (e *Engine) GetHealthState(backendID uint) bool {
     return e.healthChecker.IsHealthy(backendID)
 }
+
+func (e *Engine) GetACMEStatus(lbID uint) (status, errStr string) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	
+	if inst, ok := e.activeBalancers[lbID]; ok {
+		return inst.GetACMEStatus(), inst.GetACMEError()
+	}
+	return "", ""
+}

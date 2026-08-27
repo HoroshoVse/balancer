@@ -151,6 +151,9 @@ func (s *Server) getLoadBalancers(w http.ResponseWriter, r *http.Request) {
 				b.Status = "DOWN"
 			}
 		}
+		status, errStr := s.engine.GetACMEStatus(lbs[i].ID)
+		lbs[i].ACMEStatus = status
+		lbs[i].ACMEError = errStr
 	}
 
 	w.Header().Set("Content-Type", "application/json")

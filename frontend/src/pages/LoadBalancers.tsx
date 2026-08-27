@@ -753,7 +753,21 @@ export default function LoadBalancers() {
                   </TableCell>
                   <TableCell>
                     {lb.ssl_enabled ? (
-                      <Badge variant="default">{lb.acme_enabled ? "ACME" : "SSL"}</Badge>
+                      lb.acme_enabled ? (
+                        <Badge 
+                          className={
+                            lb.acme_status === "ok" ? "bg-green-500 hover:bg-green-600" :
+                            lb.acme_status === "issuing" ? "bg-yellow-500 hover:bg-yellow-600" :
+                            lb.acme_status === "error" ? "bg-red-500 hover:bg-red-600" :
+                            ""
+                          }
+                          title={lb.acme_error || "Auto-SSL (ACME)"}
+                        >
+                          ACME {lb.acme_status === "issuing" ? "⏳" : lb.acme_status === "error" ? "⚠️" : ""}
+                        </Badge>
+                      ) : (
+                        <Badge variant="default">SSL</Badge>
+                      )
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}

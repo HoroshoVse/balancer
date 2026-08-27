@@ -40,6 +40,9 @@ type LoadBalancerInstance struct {
 	strategy Strategy
 	
 	cancel   context.CancelFunc
+	
+	acmeStatus atomic.Value // Store string
+	acmeError  atomic.Value // Store string
 }
 
 func NewLoadBalancerInstance(config models.LoadBalancer, db *gorm.DB, hc *HealthChecker) *LoadBalancerInstance {
@@ -48,6 +51,8 @@ func NewLoadBalancerInstance(config models.LoadBalancer, db *gorm.DB, hc *Health
 		db:            db,
 		healthChecker: hc,
 	}
+	inst.acmeStatus.Store("")
+	inst.acmeError.Store("")
 
 	switch config.Algorithm {
 	case "round_robin":
@@ -337,12 +342,17 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 					}
 				}
 				if len(cleanDomains) > 0 {
+					l.acmeStatus.Store("issuing")
 					go func() {
-						err := cfg.ManageAsync(context.Background(), cleanDomains)
+						err := cfg.ManageSync(context.Background(), cleanDomains)
 						if err != nil {
+							l.acmeStatus.Store("error")
+							l.acmeError.Store(err.Error())
 							Logger.Error(fmt.Sprintf("Failed to manage ACME domains for %s: %v", l.Config.Name, err))
 						} else {
-							Logger.Info(fmt.Sprintf("ACME certificate management started for domains: %v", cleanDomains))
+							l.acmeStatus.Store("ok")
+							l.acmeError.Store("")
+							Logger.Info(fmt.Sprintf("ACME certificate successfully issued for domains: %v", cleanDomains))
 						}
 					}()
 				}
@@ -528,4 +538,18 @@ func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	
 	return resp, err
+}
+
+func (l *LoadBalancerInstance) GetACMEStatus() string {
+	if val := l.acmeStatus.Load(); val != nil {
+		return val.(string)
+	}
+	return ""
+}
+
+func (l *LoadBalancerInstance) GetACMEError() string {
+	if val := l.acmeError.Load(); val != nil {
+		return val.(string)
+	}
+	return ""
 }

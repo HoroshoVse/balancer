@@ -21,13 +21,15 @@ type LoadBalancer struct {
 	BackendGroup   BackendGroup  `json:"backend_group"`
 	
 	// TLS settings
-	SSLEnabled bool   `json:"ssl_enabled"`
-	ACMEEnabled bool  `json:"acme_enabled"` // Let's encrypt
-	ACMEEmail   string `json:"acme_email"`
-	ACMEDomains string `json:"acme_domains"` // Comma-separated domains
+	SSLEnabled  bool   `json:"ssl_enabled"`
+	AutoSSL     bool   `json:"auto_ssl"`
 	CertPath    string `json:"cert_path"`
 	KeyPath     string `json:"key_path"`
-	AutoSSL     bool   `json:"auto_ssl"`
+	ACMEEnabled bool   `json:"acme_enabled"`
+	ACMEEmail   string `json:"acme_email"`
+	ACMEDomains string `json:"acme_domains"` // Comma separated list of domains
+	ACMEStatus  string `json:"acme_status" gorm:"-"` // issuing, ok, error (not saved in db)
+	ACMEError   string `json:"acme_error" gorm:"-"` // error message if any (not saved in db)
 	
 	// HTTP/3 (QUIC)
 	HTTP3Enabled bool `json:"http3_enabled"`
