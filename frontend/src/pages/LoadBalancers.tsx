@@ -134,10 +134,15 @@ export default function LoadBalancers() {
           http2_enabled: backendHttp2Enabled
         })
       })
+      if (!res.ok) {
+        const text = await res.text()
+        setTestResults({ ...testResults, [i]: `HTTP Error ${res.status}: ${text}` })
+        return
+      }
       const data = await res.json()
       setTestResults({ ...testResults, [i]: data.logs || "Unknown error" })
-    } catch (e) {
-      setTestResults({ ...testResults, [i]: "Network error trying to test connection" })
+    } catch (e: any) {
+      setTestResults({ ...testResults, [i]: `Network error: ${e.message}` })
     }
   }
 
