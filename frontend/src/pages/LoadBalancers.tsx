@@ -460,7 +460,7 @@ export default function LoadBalancers() {
                         <label className="text-xs text-muted-foreground">Max Connections (0 = unlimited)</label>
                         <Input type="number" value={b.max_conns} onChange={e => updateBackend(i, "max_conns", parseInt(e.target.value) || 0)} min={0} />
                       </div>
-                      <div className="flex items-end gap-4 pb-1">
+                      <div className="flex items-end gap-2 flex-wrap pb-1">
                         <label className="flex items-center gap-2 text-xs">
                           <input type="checkbox" className={checkboxClass} checked={b.enabled} onChange={e => updateBackend(i, "enabled", e.target.checked)} />
                           Enabled
@@ -567,9 +567,15 @@ export default function LoadBalancers() {
                       <label htmlFor="edit-acme-enabled" className="text-sm font-medium">Auto-SSL (Let's Encrypt / ACME)</label>
                     </div>
                     {acmeEnabled && (
-                      <div className="grid gap-2 ml-7">
-                        <label className="text-sm font-medium">ACME Email</label>
-                        <Input value={acmeEmail} onChange={e => setAcmeEmail(e.target.value)} placeholder="admin@example.com" />
+                      <div className="grid gap-3 ml-7">
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">ACME Email</label>
+                          <Input value={acmeEmail} onChange={e => setAcmeEmail(e.target.value)} placeholder="admin@example.com" />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">Domains (Comma separated)</label>
+                          <Input value={acmeDomains} onChange={e => setAcmeDomains(e.target.value)} placeholder="example.com, www.example.com" />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -638,14 +644,18 @@ export default function LoadBalancers() {
                         <label className="text-xs text-muted-foreground">Max Connections (0 = unlimited)</label>
                         <Input type="number" value={b.max_conns} onChange={e => updateBackend(i, "max_conns", parseInt(e.target.value) || 0)} min={0} />
                       </div>
-                      <div className="flex items-end gap-4 pb-1">
-                        <label className="flex items-center gap-2 text-xs">
+                      <div className="flex items-end gap-2 flex-wrap pb-1">
+                        <label className="flex items-center gap-1 text-xs">
                           <input type="checkbox" className={checkboxClass} checked={b.enabled} onChange={e => updateBackend(i, "enabled", e.target.checked)} />
                           Enabled
                         </label>
-                        <label className="flex items-center gap-2 text-xs" title="Backup nodes only receive traffic when ALL primary nodes are down">
+                        <label className="flex items-center gap-1 text-xs" title="Backup nodes only receive traffic when ALL primary nodes are down">
                           <input type="checkbox" className={checkboxClass} checked={b.backup} onChange={e => updateBackend(i, "backup", e.target.checked)} />
-                          Backup (standby)
+                          Backup
+                        </label>
+                        <label className="flex items-center gap-1 text-xs text-blue-500" title="Connect to this node via HTTPS instead of HTTP">
+                          <input type="checkbox" className={checkboxClass} checked={b.tls_enabled || false} onChange={e => updateBackend(i, "tls_enabled", e.target.checked)} />
+                          HTTPS
                         </label>
                       </div>
                       
