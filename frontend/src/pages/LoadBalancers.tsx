@@ -442,7 +442,21 @@ export default function LoadBalancers() {
                   </TableCell>
                   <TableCell>{lb.algorithm?.replace("_", " ")}</TableCell>
                   <TableCell>
-                    <Badge variant="secondary">{lb.backend_group?.backends?.length || 0} nodes</Badge>
+                    <div className="flex flex-col gap-1">
+                      <Badge variant="secondary">{lb.backend_group?.backends?.length || 0} nodes</Badge>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {lb.backend_group?.backends?.map((b: any) => {
+                           // For MVP we just show green for enabled, but ideally we'd have real health state here
+                           // Real health state is tracked in the backend healthChecker instance
+                           return (
+                             <div key={b.id} className="flex items-center gap-1 text-[10px] text-muted-foreground" title={`${b.address}:${b.port}`}>
+                               <div className={`w-2 h-2 rounded-full ${b.enabled ? 'bg-green-500' : 'bg-red-500'}`} />
+                               {b.name || b.address}
+                             </div>
+                           )
+                        })}
+                      </div>
+                    </div>
                   </TableCell>
                   <TableCell>
                     {lb.ssl_enabled ? (

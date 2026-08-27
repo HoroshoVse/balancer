@@ -31,6 +31,7 @@ func (s *Server) Start(addr string) error {
 
 	// Protected Routes
 	mux.HandleFunc("/api/v1/load-balancers", s.corsMiddleware(AuthMiddleware(s.handleLoadBalancers)))
+	mux.HandleFunc("/api/v1/load-balancers/update", s.corsMiddleware(AuthMiddleware(s.updateLoadBalancer)))
 	mux.HandleFunc("/api/v1/load-balancers/delete", s.corsMiddleware(AuthMiddleware(s.deleteLoadBalancer)))
 	mux.HandleFunc("/api/v1/backends", s.corsMiddleware(AuthMiddleware(s.getBackends)))
 	mux.HandleFunc("/api/v1/metrics/overview", s.corsMiddleware(AuthMiddleware(s.getMetricsOverview)))
@@ -179,6 +180,68 @@ func (s *Server) deleteLoadBalancer(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.Delete(&models.LoadBalancer{}, id).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	go func() {
+		if err := s.engine.ReloadConfig(); err != nil {
+			log.Printf("Failed to reload config: %v", err)
+		}
+	}()
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
+	var input models.LoadBalancer
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Load existing LB
+	var existing models.LoadBalancer
+	if err := s.db.Preload("BackendGroup.Backends").First(&existing, input.ID).Error; err != nil {
+		http.Error(w, "Load balancer not found", http.StatusNotFound)
+		return
+	}
+
+	// Update LB fields
+	existing.Name = input.Name
+	existing.ListenIP = input.ListenIP
+	existing.ListenPort = input.ListenPort
+	existing.Protocol = input.Protocol
+	existing.Algorithm = input.Algorithm
+	existing.SSLEnabled = input.SSLEnabled
+	existing.ACMEEnabled = input.ACMEEnabled
+	existing.ACMEEmail = input.ACMEEmail
+	existing.HTTP3Enabled = input.HTTP3Enabled
+	existing.ProxyProtocolEnabled = input.ProxyProtocolEnabled
+	existing.ProxyProtocolVersion = input.ProxyProtocolVersion
+	existing.StickySessionsEnabled = input.StickySessionsEnabled
+	existing.StickySessionType = input.StickySessionType
+
+	if err := s.db.Save(&existing).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Update backend group health check settings
+	existing.BackendGroup.Name = input.BackendGroup.Name
+	existing.BackendGroup.HCEnabled = input.BackendGroup.HCEnabled
+	existing.BackendGroup.HCProtocol = input.BackendGroup.HCProtocol
+	existing.BackendGroup.HCPath = input.BackendGroup.HCPath
+	existing.BackendGroup.HCInterval = input.BackendGroup.HCInterval
+	existing.BackendGroup.HCTimeout = input.BackendGroup.HCTimeout
+	existing.BackendGroup.HCFailureThreshold = input.BackendGroup.HCFailureThreshold
+	existing.BackendGroup.HCRecoveryThreshold = input.BackendGroup.HCRecoveryThreshold
+	s.db.Save(&existing.BackendGroup)
+
+	// Delete old backends and create new ones
+	s.db.Where("group_id = ?", existing.BackendGroup.ID).Delete(&models.BackendServer{})
+	for _, b := range input.BackendGroup.Backends {
+		b.GroupID = existing.BackendGroup.ID
+		b.ID = 0 // Force insert
+		s.db.Create(&b)
 	}
 
 	go func() {
