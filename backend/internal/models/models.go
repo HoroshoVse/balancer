@@ -25,6 +25,8 @@ type LoadBalancer struct {
 	AutoSSL     bool   `json:"auto_ssl"`
 	CertPath    string `json:"cert_path"`
 	KeyPath     string `json:"key_path"`
+	CertData    string `json:"cert_data" gorm:"type:text"`
+	KeyData     string `json:"key_data" gorm:"type:text"`
 	ACMEEnabled bool   `json:"acme_enabled"`
 	ACMEEmail   string `json:"acme_email"`
 	ACMEDomains string `json:"acme_domains"` // Comma separated list of domains

@@ -224,6 +224,11 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 	existing.Protocol = input.Protocol
 	existing.Algorithm = input.Algorithm
 	existing.SSLEnabled = input.SSLEnabled
+	existing.AutoSSL = input.AutoSSL
+	existing.CertPath = input.CertPath
+	existing.KeyPath = input.KeyPath
+	existing.CertData = input.CertData
+	existing.KeyData = input.KeyData
 	existing.ACMEEnabled = input.ACMEEnabled
 	existing.ACMEEmail = input.ACMEEmail
 	existing.ACMEDomains = input.ACMEDomains

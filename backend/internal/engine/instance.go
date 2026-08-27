@@ -367,10 +367,19 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 				}
 			}
 			tlsConfig = cfg.TLSConfig()
+		} else if l.Config.CertData != "" && l.Config.KeyData != "" {
+			cert, err := tls.X509KeyPair([]byte(l.Config.CertData), []byte(l.Config.KeyData))
+			if err == nil {
+				tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+			} else {
+				Logger.Error(fmt.Sprintf("Failed to load TLS cert from data for %s: %v", l.Config.Name, err))
+			}
 		} else if l.Config.CertPath != "" && l.Config.KeyPath != "" {
 			cert, err := tls.LoadX509KeyPair(l.Config.CertPath, l.Config.KeyPath)
 			if err == nil {
 				tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+			} else {
+				Logger.Error(fmt.Sprintf("Failed to load TLS cert from path for %s: %v", l.Config.Name, err))
 			}
 		} else {
 			// Local dev fallback
@@ -496,9 +505,12 @@ func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		hostWithoutPort = req.Host
 	}
 	
+	tr.ForceAttemptHTTP2 = true
+	
 	tr.TLSClientConfig = &tls.Config{
 		InsecureSkipVerify: true,
 		ServerName:         hostWithoutPort, // pass original SNI to the backend
+		NextProtos:         []string{"h2", "http/1.1"}, // Enable HTTP/2 for backends like AdGuard DoH
 	}
 	if t.proxyProtocolEnabled {
 		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
