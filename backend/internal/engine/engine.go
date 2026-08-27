@@ -1,7 +1,7 @@
 package engine
 
 import (
-	"log"
+	"fmt"
 	"sync"
 
 	"github.com/balancer/backend/internal/models"

@@ -11,7 +11,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net"
 	"net/http"

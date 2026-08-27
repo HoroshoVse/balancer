@@ -85,7 +85,7 @@ export default function Logs() {
               {filteredLogs.map((log, i) => (
                 <div key={i} className="flex gap-4 hover:bg-zinc-900 px-2 py-1 rounded">
                   <span className="text-zinc-500 whitespace-nowrap">
-                    {new Date(log.timestamp || Date.now()).toISOString().replace('T', ' ').substring(0, 19)}
+                    {new Date(log.timestamp).toISOString().replace('T', ' ').substring(0, 19)}
                   </span>
                   <span className={`w-12 font-bold ${getLogColor(log.level)}`}>
                     {log.level.padEnd(5)}
