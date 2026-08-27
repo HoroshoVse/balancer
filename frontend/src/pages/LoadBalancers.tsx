@@ -81,6 +81,7 @@ export default function LoadBalancers() {
 
   // HTTP/3
   const [http3Enabled, setHttp3Enabled] = useState(false)
+  const [backendHttp2Enabled, setBackendHttp2Enabled] = useState(false)
 
   // Proxy Protocol
   const [proxyProtocolEnabled, setProxyProtocolEnabled] = useState(false)
@@ -99,7 +100,7 @@ export default function LoadBalancers() {
     setSslEnabled(false); setAcmeEnabled(false); setAcmeEmail(""); setAcmeDomains("")
     setCertPath(""); setKeyPath("")
     setCertData(""); setKeyData("")
-    setHttp3Enabled(false)
+    setHttp3Enabled(false); setBackendHttp2Enabled(false)
     setProxyProtocolEnabled(false); setProxyProtocolVersion(2)
     setStickyEnabled(false); setStickyType("ip")
     setBackends([emptyBackend()])
@@ -155,6 +156,7 @@ export default function LoadBalancers() {
       acme_email: acmeEmail,
       acme_domains: acmeDomains,
       http3_enabled: http3Enabled,
+      backend_http2_enabled: backendHttp2Enabled,
       proxy_protocol_enabled: proxyProtocolEnabled,
       proxy_protocol_version: proxyProtocolVersion,
       sticky_sessions_enabled: stickyEnabled,
@@ -215,6 +217,7 @@ export default function LoadBalancers() {
     setAcmeEmail(lb.acme_email || "")
     setAcmeDomains(lb.acme_domains || "")
     setHttp3Enabled(lb.http3_enabled || false)
+    setBackendHttp2Enabled(lb.backend_http2_enabled || false)
     setProxyProtocolEnabled(lb.proxy_protocol_enabled || false)
     setProxyProtocolVersion(lb.proxy_protocol_version || 2)
     setStickyEnabled(lb.sticky_sessions_enabled || false)
@@ -257,6 +260,7 @@ export default function LoadBalancers() {
       acme_email: acmeEmail,
       acme_domains: acmeDomains,
       http3_enabled: http3Enabled,
+      backend_http2_enabled: backendHttp2Enabled,
       proxy_protocol_enabled: proxyProtocolEnabled,
       proxy_protocol_version: proxyProtocolVersion,
       sticky_sessions_enabled: stickyEnabled,
@@ -449,6 +453,16 @@ export default function LoadBalancers() {
                   <label htmlFor="h3-enabled" className="text-sm font-medium">Enable HTTP/3</label>
                 </div>
                 <p className="text-xs text-muted-foreground ml-7">Enables QUIC-based HTTP/3 for faster connections. Requires SSL.</p>
+              </div>
+
+              {/* === Backend HTTP/2 === */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Backend Connections</h3>
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" className={checkboxClass} checked={backendHttp2Enabled} onChange={e => setBackendHttp2Enabled(e.target.checked)} id="backend-h2-enabled" />
+                  <label htmlFor="backend-h2-enabled" className="text-sm font-medium">Enable HTTP/2 to Backends</label>
+                </div>
+                <p className="text-xs text-muted-foreground ml-7">Required for DNS-over-HTTPS (DoH) servers like AdGuard Home. Disables HTTP/1.1 fallback.</p>
               </div>
 
               {/* === STICKY SESSIONS === */}
@@ -656,6 +670,16 @@ export default function LoadBalancers() {
                   <label htmlFor="edit-h3-enabled" className="text-sm font-medium">Enable HTTP/3</label>
                 </div>
                 <p className="text-xs text-muted-foreground ml-7">Enables QUIC-based HTTP/3 for faster connections. Requires SSL.</p>
+              </div>
+
+              {/* === Backend HTTP/2 === */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Backend Connections</h3>
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" className={checkboxClass} checked={backendHttp2Enabled} onChange={e => setBackendHttp2Enabled(e.target.checked)} id="edit-backend-h2-enabled" />
+                  <label htmlFor="edit-backend-h2-enabled" className="text-sm font-medium">Enable HTTP/2 to Backends</label>
+                </div>
+                <p className="text-xs text-muted-foreground ml-7">Required for DNS-over-HTTPS (DoH) servers like AdGuard Home. Disables HTTP/1.1 fallback.</p>
               </div>
 
               {/* === STICKY SESSIONS === */}
