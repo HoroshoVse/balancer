@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/balancer/backend/internal/models"
 	"gorm.io/gorm"
@@ -52,6 +53,9 @@ func (e *Engine) ReloadConfig() error {
 	for _, inst := range e.activeBalancers {
 		inst.Stop()
 	}
+	
+	// Wait briefly to ensure listeners release their ports
+	time.Sleep(500 * time.Millisecond)
 	e.activeBalancers = make(map[uint]*LoadBalancerInstance)
 
 	for _, lb := range lbs {

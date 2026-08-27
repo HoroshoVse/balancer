@@ -318,6 +318,11 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			proxyProtocolEnabled: l.Config.ProxyProtocolEnabled,
 			proxyProtocolVersion: l.Config.ProxyProtocolVersion,
 		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			Logger.Error(fmt.Sprintf("Proxy error to %s: %v", r.URL.String(), err))
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write([]byte("502 Bad Gateway - Backend node is unreachable or dropped the connection"))
+		},
 	}
 
 	handler := http.Handler(proxy)
