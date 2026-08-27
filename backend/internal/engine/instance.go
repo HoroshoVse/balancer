@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -326,6 +327,26 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 				certmagic.DefaultACME.Email = "admin@balancer.local"
 			}
 			cfg := certmagic.NewDefault()
+			if l.Config.ACMEDomains != "" {
+				rawDomains := strings.Split(l.Config.ACMEDomains, ",")
+				var cleanDomains []string
+				for _, d := range rawDomains {
+					d = strings.TrimSpace(d)
+					if d != "" {
+						cleanDomains = append(cleanDomains, d)
+					}
+				}
+				if len(cleanDomains) > 0 {
+					go func() {
+						err := cfg.ManageAsync(context.Background(), cleanDomains)
+						if err != nil {
+							Logger.Error(fmt.Sprintf("Failed to manage ACME domains for %s: %v", l.Config.Name, err))
+						} else {
+							Logger.Info(fmt.Sprintf("ACME certificate management started for domains: %v", cleanDomains))
+						}
+					}()
+				}
+			}
 			tlsConfig = cfg.TLSConfig()
 		} else if l.Config.CertPath != "" && l.Config.KeyPath != "" {
 			cert, err := tls.LoadX509KeyPair(l.Config.CertPath, l.Config.KeyPath)
