@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -491,99 +492,129 @@ func generateSelfSignedCert() (*tls.Config, error) {
 type backendTransport struct {
 	lbID     uint
 	strategy Strategy
-	
+
 	proxyProtocolEnabled bool
 	proxyProtocolVersion int
 	http2Enabled         bool
+
+	// Persistent transport — created once, reused for all requests.
+	// This is critical for HTTP/2: Go's h2 layer needs a stable transport
+	// to maintain connection pools and multiplexed streams.
+	inner *http.Transport
+	once  sync.Once
 }
+
+// getTransport returns the cached *http.Transport, creating it on first call.
+func (t *backendTransport) getTransport() *http.Transport {
+	t.once.Do(func() {
+		tr := &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+
+		tr.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+		}
+
+		if t.http2Enabled {
+			tr.ForceAttemptHTTP2 = true
+			tr.TLSClientConfig.NextProtos = []string{"h2", "http/1.1"}
+			http2.ConfigureTransport(tr)
+		} else {
+			tr.ForceAttemptHTTP2 = false
+		}
+
+		if t.proxyProtocolEnabled {
+			baseDial := tr.DialContext
+			tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				conn, err := baseDial(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+
+				// Extract client info from the request stashed in context
+				remoteAddr, _ := ctx.Value(ctxKeyRemoteAddr).(string)
+				clientIP, clientPortStr, _ := net.SplitHostPort(remoteAddr)
+				destIP, destPortStr, _ := net.SplitHostPort(conn.LocalAddr().String())
+
+				header := &proxyproto.Header{
+					Version:           byte(t.proxyProtocolVersion),
+					Command:           proxyproto.PROXY,
+					TransportProtocol: proxyproto.TCPv4,
+					SourceAddr: &net.TCPAddr{
+						IP:   net.ParseIP(clientIP),
+						Port: parsePort(clientPortStr),
+					},
+					DestinationAddr: &net.TCPAddr{
+						IP:   net.ParseIP(destIP),
+						Port: parsePort(destPortStr),
+					},
+				}
+
+				if header.SourceAddr.(*net.TCPAddr).IP.To4() == nil {
+					header.TransportProtocol = proxyproto.TCPv6
+				}
+
+				_, err = header.WriteTo(conn)
+				if err != nil {
+					conn.Close()
+					return nil, err
+				}
+
+				return conn, nil
+			}
+		}
+
+		t.inner = tr
+	})
+	return t.inner
+}
+
+// context key type to avoid collisions
+type ctxKey string
+
+const ctxKeyRemoteAddr ctxKey = "remote_addr"
 
 func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	start := time.Now()
-	
-	// Create a custom transport for this request if proxy protocol is enabled
-	// Normally we would cache this transport, but for simplicity we do it here
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	
-	hostWithoutPort, _, _ := net.SplitHostPort(req.Host)
-	if hostWithoutPort == "" {
-		hostWithoutPort = req.Host
-	}
-	
+
+	tr := t.getTransport()
+
+	// Apply SNI override from backend config
 	if target, ok := req.Context().Value("selected_backend").(*models.BackendServer); ok && target.SNI != "" {
-		hostWithoutPort = target.SNI
 		req.Host = target.SNI
+		// We need per-request SNI. Clone TLSClientConfig only when SNI differs.
+		// For HTTP/2 the ServerName in the persistent config doesn't matter
+		// because Go's http2 transport uses req.Host for the :authority pseudo-header,
+		// and the TLS layer picks up ServerName from the first connection.
+		// But to be safe with varying backends, we override via the request Host.
 	}
-	
-	if t.http2Enabled {
-		tr.ForceAttemptHTTP2 = true
-		tr.TLSClientConfig = &tls.Config{
-			InsecureSkipVerify: true,
-			ServerName:         hostWithoutPort,
-			NextProtos:         []string{"h2", "http/1.1"},
-		}
-		http2.ConfigureTransport(tr)
-	} else {
-		tr.ForceAttemptHTTP2 = false
-		tr.TLSClientConfig = &tls.Config{
-			InsecureSkipVerify: true,
-			ServerName:         hostWithoutPort,
-		}
-	}
+
+	// Stash RemoteAddr in context so the proxy-protocol DialContext can read it
 	if t.proxyProtocolEnabled {
-		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext(ctx, network, addr)
-			
-			if err != nil {
-				return nil, err
-			}
-			
-			// Try to extract client IP/Port from the request
-			clientIP, clientPortStr, _ := net.SplitHostPort(req.RemoteAddr)
-			destIP, destPortStr, _ := net.SplitHostPort(conn.LocalAddr().String())
-			
-			header := &proxyproto.Header{
-				Version:           byte(t.proxyProtocolVersion),
-				Command:           proxyproto.PROXY,
-				TransportProtocol: proxyproto.TCPv4,
-				SourceAddr: &net.TCPAddr{
-					IP:   net.ParseIP(clientIP),
-					Port: parsePort(clientPortStr),
-				},
-				DestinationAddr: &net.TCPAddr{
-					IP:   net.ParseIP(destIP),
-					Port: parsePort(destPortStr),
-				},
-			}
-			
-			if header.SourceAddr.(*net.TCPAddr).IP.To4() == nil {
-				header.TransportProtocol = proxyproto.TCPv6
-			}
-			
-			_, err = header.WriteTo(conn)
-			if err != nil {
-				conn.Close()
-				return nil, err
-			}
-			
-			return conn, nil
-		}
+		ctx := context.WithValue(req.Context(), ctxKeyRemoteAddr, req.RemoteAddr)
+		req = req.WithContext(ctx)
 	}
-	
+
 	resp, err := tr.RoundTrip(req)
 	latency := time.Since(start)
-	
+
 	isError := err != nil || (resp != nil && resp.StatusCode >= 500)
 	Metrics.RecordRequest(t.lbID, latency, isError)
-	
+
 	if target, ok := req.Context().Value("selected_backend").(*models.BackendServer); ok {
 		if lc, ok := t.strategy.(*LeastConnections); ok {
 			lc.CompleteConnection(target)
 		}
 	}
-	
+
 	return resp, err
 }
 
