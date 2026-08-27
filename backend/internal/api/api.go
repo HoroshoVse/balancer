@@ -223,6 +223,7 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 	existing.SSLEnabled = input.SSLEnabled
 	existing.ACMEEnabled = input.ACMEEnabled
 	existing.ACMEEmail = input.ACMEEmail
+	existing.ACMEDomains = input.ACMEDomains
 	existing.HTTP3Enabled = input.HTTP3Enabled
 	existing.ProxyProtocolEnabled = input.ProxyProtocolEnabled
 	existing.ProxyProtocolVersion = input.ProxyProtocolVersion

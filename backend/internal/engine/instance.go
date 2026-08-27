@@ -290,8 +290,8 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			*req = *req.WithContext(ctx)
 			
 			scheme := "http"
-			if l.Config.Protocol == "https" { 
-				scheme = "http"
+			if target.TLSEnabled { 
+				scheme = "https"
 			}
 			
 			req.URL.Scheme = scheme
@@ -450,7 +450,7 @@ func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	// Create a custom transport for this request if proxy protocol is enabled
 	// Normally we would cache this transport, but for simplicity we do it here
 	tr := http.DefaultTransport.(*http.Transport).Clone()
-	
+	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	if t.proxyProtocolEnabled {
 		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			conn, err := (&net.Dialer{

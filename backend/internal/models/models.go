@@ -24,6 +24,7 @@ type LoadBalancer struct {
 	SSLEnabled bool   `json:"ssl_enabled"`
 	ACMEEnabled bool  `json:"acme_enabled"` // Let's encrypt
 	ACMEEmail   string `json:"acme_email"`
+	ACMEDomains string `json:"acme_domains"` // Comma-separated domains
 	CertPath    string `json:"cert_path"`
 	KeyPath     string `json:"key_path"`
 	AutoSSL     bool   `json:"auto_ssl"`
@@ -58,8 +59,8 @@ type BackendServer struct {
 	Weight    int            `json:"weight" gorm:"default:1"`
 	Enabled   bool           `json:"enabled" gorm:"default:true"`
 	Backup    bool           `json:"backup" gorm:"default:false"` // Backup server
-	MaxConns  int            `json:"max_conns" gorm:"default:0"`
-
+	MaxConns  int            `json:"max_conns"` // Maximum concurrent connections
+	TLSEnabled bool          `json:"tls_enabled"` // proxy to backend via HTTPS
 	// Health Check settings
 	HCEnabled   bool   `json:"hc_enabled"`
 	HCProtocol  string `json:"hc_protocol"` // http, tcp

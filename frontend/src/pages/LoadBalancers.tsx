@@ -22,6 +22,7 @@ interface BackendNode {
   enabled: boolean
   backup: boolean
   max_conns: number
+  tls_enabled?: boolean
   status?: string
   hc_enabled?: boolean
   hc_protocol?: string
@@ -41,6 +42,7 @@ const emptyBackend = (): BackendNode => ({
   enabled: true,
   backup: false,
   max_conns: 0,
+  tls_enabled: false,
   hc_enabled: true,
   hc_protocol: "http",
   hc_port: 0,
@@ -71,6 +73,7 @@ export default function LoadBalancers() {
   const [sslEnabled, setSslEnabled] = useState(false)
   const [acmeEnabled, setAcmeEnabled] = useState(false)
   const [acmeEmail, setAcmeEmail] = useState("")
+  const [acmeDomains, setAcmeDomains] = useState("")
 
   // HTTP/3
   const [http3Enabled, setHttp3Enabled] = useState(false)
@@ -89,7 +92,7 @@ export default function LoadBalancers() {
   const resetForm = () => {
     setName(""); setListenIp("0.0.0.0"); setListenPort(80)
     setProtocol("http"); setAlgorithm("round_robin")
-    setSslEnabled(false); setAcmeEnabled(false); setAcmeEmail("")
+    setSslEnabled(false); setAcmeEnabled(false); setAcmeEmail(""); setAcmeDomains("")
     setHttp3Enabled(false)
     setProxyProtocolEnabled(false); setProxyProtocolVersion(2)
     setStickyEnabled(false); setStickyType("ip")
@@ -139,6 +142,7 @@ export default function LoadBalancers() {
       ssl_enabled: sslEnabled,
       acme_enabled: acmeEnabled,
       acme_email: acmeEmail,
+      acme_domains: acmeDomains,
       http3_enabled: http3Enabled,
       proxy_protocol_enabled: proxyProtocolEnabled,
       proxy_protocol_version: proxyProtocolVersion,
@@ -154,6 +158,7 @@ export default function LoadBalancers() {
           enabled: b.enabled,
           backup: b.backup,
           max_conns: b.max_conns,
+          tls_enabled: b.tls_enabled,
           hc_enabled: b.hc_enabled,
           hc_protocol: b.hc_protocol,
           hc_port: b.hc_port,
@@ -190,9 +195,10 @@ export default function LoadBalancers() {
     setListenPort(lb.listen_port || 80)
     setProtocol(lb.protocol || "http")
     setAlgorithm(lb.algorithm || "round_robin")
-    setSslEnabled(lb.ssl_enabled || false)
-    setAcmeEnabled(lb.acme_enabled || false)
+    setSslEnabled(lb.ssl_enabled)
+    setAcmeEnabled(lb.acme_enabled)
     setAcmeEmail(lb.acme_email || "")
+    setAcmeDomains(lb.acme_domains || "")
     setHttp3Enabled(lb.http3_enabled || false)
     setProxyProtocolEnabled(lb.proxy_protocol_enabled || false)
     setProxyProtocolVersion(lb.proxy_protocol_version || 2)
@@ -229,6 +235,7 @@ export default function LoadBalancers() {
       ssl_enabled: sslEnabled,
       acme_enabled: acmeEnabled,
       acme_email: acmeEmail,
+      acme_domains: acmeDomains,
       http3_enabled: http3Enabled,
       proxy_protocol_enabled: proxyProtocolEnabled,
       proxy_protocol_version: proxyProtocolVersion,
@@ -244,6 +251,7 @@ export default function LoadBalancers() {
           enabled: b.enabled !== undefined ? b.enabled : true,
           backup: b.backup || false,
           max_conns: b.max_conns || 0,
+          tls_enabled: b.tls_enabled || false,
           hc_enabled: b.hc_enabled,
           hc_protocol: b.hc_protocol,
           hc_port: b.hc_port,
@@ -375,9 +383,15 @@ export default function LoadBalancers() {
                       <label htmlFor="acme-enabled" className="text-sm font-medium">Auto-SSL (Let's Encrypt / ACME)</label>
                     </div>
                     {acmeEnabled && (
-                      <div className="grid gap-2 ml-7">
-                        <label className="text-sm font-medium">ACME Email</label>
-                        <Input value={acmeEmail} onChange={e => setAcmeEmail(e.target.value)} placeholder="admin@example.com" />
+                      <div className="grid gap-3 ml-7">
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">ACME Email</label>
+                          <Input value={acmeEmail} onChange={e => setAcmeEmail(e.target.value)} placeholder="admin@example.com" />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">Domains (Comma separated)</label>
+                          <Input value={acmeDomains} onChange={e => setAcmeDomains(e.target.value)} placeholder="example.com, www.example.com" />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -454,6 +468,10 @@ export default function LoadBalancers() {
                         <label className="flex items-center gap-2 text-xs" title="Backup nodes only receive traffic when ALL primary nodes are down">
                           <input type="checkbox" className={checkboxClass} checked={b.backup} onChange={e => updateBackend(i, "backup", e.target.checked)} />
                           Backup (standby)
+                        </label>
+                        <label className="flex items-center gap-2 text-xs text-blue-500" title="Connect to this node via HTTPS instead of HTTP">
+                          <input type="checkbox" className={checkboxClass} checked={b.tls_enabled || false} onChange={e => updateBackend(i, "tls_enabled", e.target.checked)} />
+                          HTTPS
                         </label>
                       </div>
                     </div>
