@@ -338,6 +338,7 @@ export default function LoadBalancers() {
                       <option value="http">HTTP</option>
                       <option value="https">HTTPS</option>
                       <option value="tcp">TCP</option>
+                      <option value="udp">UDP</option>
                     </select>
                   </div>
                   <div className="grid gap-2">
@@ -487,6 +488,7 @@ export default function LoadBalancers() {
                         <select className={selectClass} value={hcProtocol} onChange={e => setHcProtocol(e.target.value)}>
                           <option value="http">HTTP</option>
                           <option value="tcp">TCP</option>
+                          <option value="udp">UDP</option>
                         </select>
                       </div>
                       <div className="grid gap-2">
@@ -559,6 +561,7 @@ export default function LoadBalancers() {
                       <option value="http">HTTP</option>
                       <option value="https">HTTPS</option>
                       <option value="tcp">TCP</option>
+                      <option value="udp">UDP</option>
                     </select>
                   </div>
                   <div className="grid gap-2">
@@ -708,6 +711,7 @@ export default function LoadBalancers() {
                         <select className={selectClass} value={hcProtocol} onChange={e => setHcProtocol(e.target.value)}>
                           <option value="http">HTTP</option>
                           <option value="tcp">TCP</option>
+                          <option value="udp">UDP</option>
                         </select>
                       </div>
                       <div className="grid gap-2">

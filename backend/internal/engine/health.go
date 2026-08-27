@@ -124,6 +124,12 @@ func (hc *HealthChecker) checkBackend(group models.BackendGroup, backend models.
 		if resp != nil {
 			resp.Body.Close()
 		}
+	} else if group.HCProtocol == "udp" {
+		conn, err := net.DialTimeout("udp", target, timeout)
+		if err == nil {
+			isUp = true
+			conn.Close()
+		}
 	} else { // TCP fallback
 		conn, err := net.DialTimeout("tcp", target, timeout)
 		if err == nil {

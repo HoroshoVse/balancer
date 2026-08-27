@@ -75,6 +75,8 @@ func (l *LoadBalancerInstance) Start() error {
 
 	if l.Config.Protocol == "tcp" {
 		return l.startTCP(ctx)
+	} else if l.Config.Protocol == "udp" {
+		return l.startUDP(ctx)
 	}
 	return l.startHTTP(ctx)
 }
@@ -201,6 +203,63 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 		io.Copy(clientConn, backendConn)
 		clientConn.Close()
 	}()
+}
+
+func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
+	addr := fmt.Sprintf("%s:%d", l.Config.ListenIP, l.Config.ListenPort)
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return err
+	}
+
+	conn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("UDP LoadBalancer %s listening on %s", l.Config.Name, addr)
+
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
+
+	buf := make([]byte, 65507)
+	for {
+		n, clientAddr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return nil // Graceful shutdown
+			default:
+				log.Printf("ReadFromUDP error on %s: %v", l.Config.Name, err)
+				continue
+			}
+		}
+
+		data := make([]byte, n)
+		copy(data, buf[:n])
+		
+		go l.handleUDPPacket(data, clientAddr)
+	}
+}
+
+func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPAddr) {
+	backends := l.backends.Load().([]*models.BackendServer)
+	target := l.strategy.Next(backends, clientAddr.IP.String())
+	if target == nil {
+		return
+	}
+
+	targetAddr := fmt.Sprintf("%s:%d", target.Address, target.Port)
+	backendConn, err := net.Dial("udp", targetAddr)
+	if err != nil {
+		log.Printf("Failed to connect to backend %s: %v", targetAddr, err)
+		return
+	}
+	defer backendConn.Close()
+
+	backendConn.Write(data)
 }
 
 func parsePort(s string) int {
