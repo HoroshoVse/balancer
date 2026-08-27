@@ -331,6 +331,10 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			if certmagic.DefaultACME.Email == "" {
 				certmagic.DefaultACME.Email = "admin@balancer.local"
 			}
+			
+			// Store certificates in the persistent volume mapped in docker-compose
+			certmagic.Default.Storage = &certmagic.FileStorage{Path: "./certs/certmagic"}
+			
 			cfg := certmagic.NewDefault()
 			if l.Config.ACMEDomains != "" {
 				rawDomains := strings.Split(l.Config.ACMEDomains, ",")
