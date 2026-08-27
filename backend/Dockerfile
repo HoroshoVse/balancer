@@ -9,13 +9,13 @@ RUN go mod download || true
 
 COPY . .
 RUN go mod tidy
-RUN go build -o balacer ./cmd/server/main.go
-RUN go build -o balacer-cli ./cmd/cli/main.go
+RUN go build -o balancer ./cmd/server/main.go
+RUN go build -o balancer-cli ./cmd/cli/main.go
 
 FROM alpine:latest
 WORKDIR /app
-COPY --from=builder /app/balacer .
-COPY --from=builder /app/balacer-cli .
+COPY --from=builder /app/balancer .
+COPY --from=builder /app/balancer-cli .
 EXPOSE 80 443 443/udp 8080
 
-CMD ["./balacer"]
+CMD ["./balancer"]

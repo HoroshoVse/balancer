@@ -14,7 +14,7 @@ services:
       - ./backend/certs:/app/certs
       - ./backend/data:/app/data
     environment:
-      - DB_DSN=postgres://balacer:balacer@db:5432/balacer?sslmode=disable
+      - DB_DSN=postgres://balancer:balancer@db:5432/balancer?sslmode=disable
       - DEV_MODE=true
     depends_on:
       - db
@@ -22,9 +22,9 @@ services:
   db:
     image: postgres:15-alpine
     environment:
-      POSTGRES_USER: balacer
-      POSTGRES_PASSWORD: balacer
-      POSTGRES_DB: balacer
+      POSTGRES_USER: balancer
+      POSTGRES_PASSWORD: balancer
+      POSTGRES_DB: balancer
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:

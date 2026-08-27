@@ -26,6 +26,7 @@ type LoadBalancer struct {
 	ACMEEmail   string `json:"acme_email"`
 	CertPath    string `json:"cert_path"`
 	KeyPath     string `json:"key_path"`
+	AutoSSL     bool   `json:"auto_ssl"`
 	
 	// HTTP/3 (QUIC)
 	HTTP3Enabled bool `json:"http3_enabled"`
@@ -77,4 +78,11 @@ type User struct {
 	Username string `gorm:"uniqueIndex" json:"username"`
 	Password string `json:"-"`
 	Role     string `json:"role"` // Admin, Operator, Viewer
+}
+
+type Settings struct {
+	ID                uint   `gorm:"primarykey" json:"id"`
+	TelegramBotToken  string `json:"telegram_bot_token"`
+	TelegramChatID    string `json:"telegram_chat_id"`
+	NotificationsEnabled bool `json:"notifications_enabled" gorm:"default:false"`
 }

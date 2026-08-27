@@ -5,13 +5,13 @@ import (
 	"log"
 	"os"
 
-	"github.com/balacer/backend/internal/db"
-	"github.com/balacer/backend/internal/models"
+	"github.com/balancer/backend/internal/db"
+	"github.com/balancer/backend/internal/models"
 	"golang.org/x/crypto/bcrypt"
 )
 
 func printUsage() {
-	fmt.Println("Usage: balacer-cli <resource> <action> [args...]")
+	fmt.Println("Usage: balancer-cli <resource> <action> [args...]")
 	fmt.Println("\nCommands:")
 	fmt.Println("  users list                               List all users")
 	fmt.Println("  users add <username> <password> [role]   Create a new user (role defaults to Admin)")
@@ -29,7 +29,7 @@ func main() {
 
 	dsn := os.Getenv("DB_DSN")
 	if dsn == "" {
-		dsn = "postgres://balacer:balacer@localhost:5432/balacer?sslmode=disable"
+		dsn = "postgres://balancer:balancer@localhost:5432/balancer?sslmode=disable"
 	}
 
 	database, err := db.InitDB(dsn)

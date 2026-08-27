@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -9,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/balacer/backend/internal/models"
+	"github.com/balancer/backend/internal/models"
 	"gorm.io/gorm"
 )
 
@@ -17,10 +19,14 @@ type HealthChecker struct {
 	db     *gorm.DB
 	cancel context.CancelFunc
 	mu     sync.RWMutex
+	states map[uint]bool
 }
 
 func NewHealthChecker(db *gorm.DB) *HealthChecker {
-	return &HealthChecker{db: db}
+	return &HealthChecker{
+		db:     db,
+		states: make(map[uint]bool),
+	}
 }
 
 func (hc *HealthChecker) Start() {
@@ -109,9 +115,55 @@ func (hc *HealthChecker) checkBackend(group models.BackendGroup, backend models.
 
 	// Update logic goes here (Trigger Engine Reload/Update active backends list)
 	// Usually this is done via channels or atomic pointers to avoid locks.
-	if !isUp {
-		log.Printf("HealthCheck FAILED for %s (%s)", backend.Name, target)
-	} else {
-		// log.Printf("HealthCheck OK for %s (%s)", backend.Name, target)
+	
+	hc.mu.Lock()
+	prevState, exists := hc.states[backend.ID]
+	if !exists {
+		prevState = true // Assume it was up initially to avoid spamming on start if it's dead
 	}
+	
+	if isUp != prevState {
+		hc.states[backend.ID] = isUp
+		hc.mu.Unlock()
+		
+		statusStr := "UP 🟢"
+		if !isUp {
+			statusStr = "DOWN 🔴"
+			log.Printf("HealthCheck FAILED for %s (%s)", backend.Name, target)
+		} else {
+			log.Printf("HealthCheck OK for %s (%s)", backend.Name, target)
+		}
+		
+		msg := fmt.Sprintf("Backend **%s** (%s) is now %s", backend.Name, target, statusStr)
+		hc.sendTelegramAlert(msg)
+	} else {
+		hc.mu.Unlock()
+	}
+}
+
+func (hc *HealthChecker) sendTelegramAlert(message string) {
+	var settings models.Settings
+	if err := hc.db.First(&settings).Error; err != nil {
+		return
+	}
+	
+	if !settings.NotificationsEnabled || settings.TelegramBotToken == "" || settings.TelegramChatID == "" {
+		return
+	}
+	
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", settings.TelegramBotToken)
+	payload := map[string]interface{}{
+		"chat_id":    settings.TelegramChatID,
+		"text":       message,
+		"parse_mode": "Markdown",
+	}
+	
+	data, _ := json.Marshal(payload)
+	go func() {
+		client := http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Post(url, "application/json", bytes.NewBuffer(data))
+		if err == nil && resp != nil {
+			resp.Body.Close()
+		}
+	}()
 }

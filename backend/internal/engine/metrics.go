@@ -1,9 +1,13 @@
 package engine
 
 import (
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 type LBMetrics struct {
@@ -16,7 +20,34 @@ type MetricsRegistry struct {
 	lbs sync.Map // map[uint]*LBMetrics
 }
 
-var Metrics = &MetricsRegistry{}
+var (
+	Metrics = &MetricsRegistry{}
+
+	promTotalRequests = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "balancer_requests_total",
+			Help: "Total number of requests processed by the load balancer",
+		},
+		[]string{"lb_id"},
+	)
+
+	promTotalErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "balancer_errors_total",
+			Help: "Total number of failed requests",
+		},
+		[]string{"lb_id"},
+	)
+
+	promRequestLatency = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "balancer_request_duration_seconds",
+			Help:    "Latency of requests in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"lb_id"},
+	)
+)
 
 func (m *MetricsRegistry) getOrCreate(lbID uint) *LBMetrics {
 	val, ok := m.lbs.Load(lbID)
@@ -33,8 +64,13 @@ func (m *MetricsRegistry) RecordRequest(lbID uint, latency time.Duration, isErro
 	atomic.AddUint64(&lbMetrics.TotalRequests, 1)
 	atomic.AddUint64(&lbMetrics.TotalLatency, uint64(latency.Milliseconds()))
 	
+	idStr := strconv.Itoa(int(lbID))
+	promTotalRequests.WithLabelValues(idStr).Inc()
+	promRequestLatency.WithLabelValues(idStr).Observe(latency.Seconds())
+	
 	if isError {
 		atomic.AddUint64(&lbMetrics.TotalErrors, 1)
+		promTotalErrors.WithLabelValues(idStr).Inc()
 	}
 }
 

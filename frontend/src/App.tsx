@@ -3,6 +3,7 @@ import { Layout } from "./components/layout/Layout"
 import Dashboard from "./pages/Dashboard"
 import LoadBalancers from "./pages/LoadBalancers"
 import Login from "./pages/Login"
+import { Settings } from "./pages/Settings"
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem("token")
@@ -20,6 +21,7 @@ function App() {
         
         <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/lbs" element={<ProtectedRoute><LoadBalancers /></ProtectedRoute>} />
+        <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
       </Routes>
     </BrowserRouter>
   )

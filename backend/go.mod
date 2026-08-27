@@ -1,4 +1,4 @@
-module github.com/balacer/backend
+module github.com/balancer/backend
 
 go 1.22
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/balacer/backend/internal/models"
+	"github.com/balancer/backend/internal/models"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )

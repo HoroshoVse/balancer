@@ -2,11 +2,13 @@ package api
 
 import (
 	"encoding/json"
-	"net/http"
 	"log"
+	"net/http"
+
+	"github.com/balancer/backend/internal/engine"
+	"github.com/balancer/backend/internal/models"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gorm.io/gorm"
-	"github.com/balacer/backend/internal/engine"
-	"github.com/balacer/backend/internal/models"
 )
 
 type Server struct {
@@ -31,6 +33,11 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/v1/load-balancers", s.corsMiddleware(AuthMiddleware(s.getLoadBalancers)))
 	mux.HandleFunc("/api/v1/backends", s.corsMiddleware(AuthMiddleware(s.getBackends)))
 	mux.HandleFunc("/api/v1/metrics/overview", s.corsMiddleware(AuthMiddleware(s.getMetricsOverview)))
+	mux.HandleFunc("/api/v1/settings", s.corsMiddleware(AuthMiddleware(s.getSettings)))
+	mux.HandleFunc("/api/v1/settings/update", s.corsMiddleware(AuthMiddleware(s.updateSettings)))
+
+	// Prometheus metrics endpoint (unprotected for scraping, or you can protect it)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	log.Printf("API Server listening on %s", addr)
 	return http.ListenAndServe(addr, mux)
@@ -57,6 +64,40 @@ func (s *Server) getBackends(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(backends)
+}
+
+func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
+	var settings models.Settings
+	if err := s.db.First(&settings).Error; err != nil {
+		settings = models.Settings{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(settings)
+}
+
+func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
+	var input models.Settings
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var settings models.Settings
+	if err := s.db.First(&settings).Error; err != nil {
+		if err := s.db.Create(&input).Error; err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		settings.TelegramBotToken = input.TelegramBotToken
+		settings.TelegramChatID = input.TelegramChatID
+		settings.NotificationsEnabled = input.NotificationsEnabled
+		if err := s.db.Save(&settings).Error; err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) getMetricsOverview(w http.ResponseWriter, r *http.Request) {

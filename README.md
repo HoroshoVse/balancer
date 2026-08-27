@@ -1,6 +1,6 @@
-# Balacer
+# Balancer
 
-Balacer — это современный, высокопроизводительный production-ready балансировщик нагрузки (Load Balancer), написанный на Go (Backend) и React (Frontend).
+Balancer — это современный, высокопроизводительный production-ready балансировщик нагрузки (Load Balancer), написанный на Go (Backend) и React (Frontend).
 
 ## Основные возможности
 
@@ -21,8 +21,8 @@ Balacer — это современный, высокопроизводител�
 
 1. **Клонируйте репозиторий:**
    ```bash
-   git clone https://github.com/HoroshoVse/balacer.git
-   cd balacer
+   git clone https://github.com/HoroshoVse/balancer.git
+   cd balancer
    ```
 
 2. **Запустите проект:**
@@ -41,23 +41,23 @@ Balacer — это современный, высокопроизводител�
 
 ## Управление пользователями (CLI)
 
-В состав бэкенда входит встроенная утилита командной строки `balacer-cli`. Для работы с ней выполняйте команды внутри Docker-контейнера.
+В состав бэкенда входит встроенная утилита командной строки `balancer-cli`. Для работы с ней выполняйте команды внутри Docker-контейнера.
 
 **Просмотр списка всех пользователей:**
 ```bash
-docker compose exec backend ./balacer-cli users list
+docker compose exec backend ./balancer-cli users list
 ```
 
 **Добавление нового пользователя:**
 ```bash
-docker compose exec backend ./balacer-cli users add <username> <password> [role]
-# Пример: docker compose exec backend ./balacer-cli users add developer qwerty1234 Admin
+docker compose exec backend ./balancer-cli users add <username> <password> [role]
+# Пример: docker compose exec backend ./balancer-cli users add developer qwerty1234 Admin
 ```
 
 **Смена пароля:**
 ```bash
-docker compose exec backend ./balacer-cli users passwd <username> <new_password>
-# Пример: docker compose exec backend ./balacer-cli users passwd admin super_secure_pass
+docker compose exec backend ./balancer-cli users passwd <username> <new_password>
+# Пример: docker compose exec backend ./balancer-cli users passwd admin super_secure_pass
 ```
 
 ---

@@ -4,11 +4,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/balacer/backend/internal/models"
+	"github.com/balancer/backend/internal/models"
 )
 
 type Strategy interface {
-	Next(backends []*models.BackendServer) *models.BackendServer
+	Next(backends []*models.BackendServer, clientIP string) *models.BackendServer
 }
 
 // RoundRobin Strategy
@@ -16,7 +16,7 @@ type RoundRobin struct {
 	counter uint64
 }
 
-func (r *RoundRobin) Next(backends []*models.BackendServer) *models.BackendServer {
+func (r *RoundRobin) Next(backends []*models.BackendServer, clientIP string) *models.BackendServer {
 	if len(backends) == 0 {
 		return nil
 	}
@@ -28,7 +28,7 @@ type LeastConnections struct {
 	connections sync.Map // map[*models.BackendServer]*int64
 }
 
-func (l *LeastConnections) Next(backends []*models.BackendServer) *models.BackendServer {
+func (l *LeastConnections) Next(backends []*models.BackendServer, clientIP string) *models.BackendServer {
 	if len(backends) == 0 {
 		return nil
 	}
@@ -67,8 +67,51 @@ type WeightedRoundRobin struct {
 	current uint64
 }
 
-func (w *WeightedRoundRobin) Next(backends []*models.BackendServer) *models.BackendServer {
-	// ... implementation
+func (w *WeightedRoundRobin) Next(backends []*models.BackendServer, clientIP string) *models.BackendServer {
+	if len(backends) == 0 {
+		return nil
+	}
+	
+	// Calculate total weight
+	var totalWeight int
+	for _, b := range backends {
+		weight := b.Weight
+		if weight <= 0 {
+			weight = 1
+		}
+		totalWeight += weight
+	}
+
+	idx := atomic.AddUint64(&w.current, 1) % uint64(totalWeight)
+	
+	var currentWeight uint64
+	for _, b := range backends {
+		weight := b.Weight
+		if weight <= 0 {
+			weight = 1
+		}
+		currentWeight += uint64(weight)
+		if idx < currentWeight {
+			return b
+		}
+	}
+	
 	return backends[0]
 }
 
+// IPHash Strategy
+type IPHash struct{}
+
+func (h *IPHash) Next(backends []*models.BackendServer, clientIP string) *models.BackendServer {
+	if len(backends) == 0 {
+		return nil
+	}
+	
+	var hash uint32 = 0
+	for i := 0; i < len(clientIP); i++ {
+		hash = hash*31 + uint32(clientIP[i])
+	}
+	
+	idx := hash % uint32(len(backends))
+	return backends[idx]
+}

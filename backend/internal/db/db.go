@@ -6,7 +6,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"golang.org/x/crypto/bcrypt"
-	"github.com/balacer/backend/internal/models"
+	"github.com/balancer/backend/internal/models"
 )
 
 func InitDB(dsn string) (*gorm.DB, error) {
@@ -17,7 +17,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	} else {
 		// fallback to sqlite
-		db, err = gorm.Open(sqlite.Open("balacer.db"), &gorm.Config{})
+		db, err = gorm.Open(sqlite.Open("balancer.db"), &gorm.Config{})
 	}
 
 	if err != nil {
@@ -30,6 +30,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&models.BackendGroup{},
 		&models.BackendServer{},
 		&models.User{},
+		&models.Settings{},
 	)
 	
 	if err != nil {

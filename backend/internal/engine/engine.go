@@ -4,7 +4,7 @@ import (
 	"log"
 	"sync"
 
-	"github.com/balacer/backend/internal/models"
+	"github.com/balancer/backend/internal/models"
 	"gorm.io/gorm"
 )
 

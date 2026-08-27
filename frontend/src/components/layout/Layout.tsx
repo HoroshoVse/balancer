@@ -8,7 +8,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div className="flex h-14 items-center border-b px-4 lg:h-[60px] lg:px-6">
           <Link to="/" className="flex items-center gap-2 font-semibold">
             <Activity className="h-6 w-6" />
-            <span className="">Balacer</span>
+            <span className="">Balancer</span>
           </Link>
         </div>
         <nav className="flex-1 overflow-auto py-2">
@@ -26,6 +26,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
             >
               <Server className="h-4 w-4" />
               Load Balancers
+            </Link>
+            <Link
+              to="/settings"
+              className="flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground transition-all hover:text-primary"
+            >
+              <Server className="h-4 w-4" /> {/* Use appropriate icon if possible, Server is fine or import Settings icon */}
+              Settings
             </Link>
           </div>
         </nav>

@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/balacer/backend/internal/models"
+	"github.com/balancer/backend/internal/models"
 	"github.com/caddyserver/certmagic"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/pires/go-proxyproto"
@@ -52,6 +52,10 @@ func NewLoadBalancerInstance(config models.LoadBalancer, db *gorm.DB) *LoadBalan
 		inst.strategy = &RoundRobin{}
 	case "least_conn":
 		inst.strategy = &LeastConnections{}
+	case "weighted_round_robin":
+		inst.strategy = &WeightedRoundRobin{}
+	case "ip_hash":
+		inst.strategy = &IPHash{}
 	default:
 		inst.strategy = &RoundRobin{} // Default
 	}
@@ -115,7 +119,8 @@ func (l *LoadBalancerInstance) startTCP(ctx context.Context) error {
 
 func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 	backends := l.backends.Load().([]*models.BackendServer)
-	target := l.strategy.Next(backends)
+	clientIP, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
+	target := l.strategy.Next(backends, clientIP)
 	if target == nil {
 		clientConn.Close()
 		return
@@ -182,7 +187,11 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			backends := l.backends.Load().([]*models.BackendServer)
-			target := l.strategy.Next(backends)
+			clientIP, _, err := net.SplitHostPort(req.RemoteAddr)
+			if err != nil {
+				clientIP = req.RemoteAddr
+			}
+			target := l.strategy.Next(backends, clientIP)
 			if target == nil {
 				return
 			}
@@ -201,7 +210,6 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			req.URL.Path = req.URL.Path
 			req.Host = req.URL.Host
 
-			clientIP, _, err := net.SplitHostPort(req.RemoteAddr)
 			if err == nil {
 				req.Header.Set("X-Real-IP", clientIP)
 				if req.Header.Get("X-Forwarded-For") == "" {
@@ -222,9 +230,12 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 	// TLS / ACME Setup
 	var tlsConfig *tls.Config
 	if l.Config.SSLEnabled {
-		if l.Config.ACMEEnabled {
+		if l.Config.ACMEEnabled || l.Config.AutoSSL {
 			certmagic.DefaultACME.Agreed = true
 			certmagic.DefaultACME.Email = l.Config.ACMEEmail
+			if certmagic.DefaultACME.Email == "" {
+				certmagic.DefaultACME.Email = "admin@balancer.local"
+			}
 			cfg := certmagic.NewDefault()
 			tlsConfig = cfg.TLSConfig()
 		} else if l.Config.CertPath != "" && l.Config.KeyPath != "" {
@@ -305,7 +316,7 @@ func generateSelfSignedCert() (*tls.Config, error) {
 	template := x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject: pkix.Name{
-			Organization: []string{"Balacer Local Dev"},
+			Organization: []string{"Balancer Local Dev"},
 		},
 		NotBefore: time.Now(),
 		NotAfter:  time.Now().Add(time.Hour * 24 * 365),
