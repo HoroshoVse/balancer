@@ -37,11 +37,12 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/v1/metrics/overview", s.corsMiddleware(AuthMiddleware(s.getMetricsOverview)))
 	mux.HandleFunc("/api/v1/settings", s.corsMiddleware(AuthMiddleware(s.getSettings)))
 	mux.HandleFunc("/api/v1/settings/update", s.corsMiddleware(AuthMiddleware(s.updateSettings)))
+	mux.HandleFunc("/api/v1/logs", s.corsMiddleware(AuthMiddleware(s.getLogs)))
 
-	// Prometheus metrics endpoint (unprotected for scraping, or you can protect it)
+	// Metrics
 	mux.Handle("/metrics", promhttp.Handler())
 
-	log.Printf("API Server listening on %s", addr)
+	engine.Logger.Info("API Server listening on " + addr)
 	return http.ListenAndServe(addr, mux)
 }
 
@@ -142,6 +143,15 @@ func (s *Server) getLoadBalancers(w http.ResponseWriter, r *http.Request) {
 
 	for i := range lbs {
 		lbs[i].Metrics = engine.Metrics.GetMetricsForLB(lbs[i].ID)
+		for j := range lbs[i].BackendGroup.Backends {
+			b := &lbs[i].BackendGroup.Backends[j]
+			isUp := s.engine.GetHealthState(b.ID)
+			if isUp {
+				b.Status = "UP"
+			} else {
+				b.Status = "DOWN"
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -163,7 +173,7 @@ func (s *Server) createLoadBalancer(w http.ResponseWriter, r *http.Request) {
 	// Reload config asynchronously so API returns quickly
 	go func() {
 		if err := s.engine.ReloadConfig(); err != nil {
-			log.Printf("Failed to reload config: %v", err)
+			engine.Logger.Error("Failed to reload config: " + err.Error())
 		}
 	}()
 
@@ -184,7 +194,7 @@ func (s *Server) deleteLoadBalancer(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		if err := s.engine.ReloadConfig(); err != nil {
-			log.Printf("Failed to reload config: %v", err)
+			engine.Logger.Error("Failed to reload config: " + err.Error())
 		}
 	}()
 
@@ -225,16 +235,8 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update backend group health check settings
+	// Update backend group
 	existing.BackendGroup.Name = input.BackendGroup.Name
-	existing.BackendGroup.HCEnabled = input.BackendGroup.HCEnabled
-	existing.BackendGroup.HCProtocol = input.BackendGroup.HCProtocol
-	existing.BackendGroup.HCPort = input.BackendGroup.HCPort
-	existing.BackendGroup.HCPath = input.BackendGroup.HCPath
-	existing.BackendGroup.HCInterval = input.BackendGroup.HCInterval
-	existing.BackendGroup.HCTimeout = input.BackendGroup.HCTimeout
-	existing.BackendGroup.HCFailureThreshold = input.BackendGroup.HCFailureThreshold
-	existing.BackendGroup.HCRecoveryThreshold = input.BackendGroup.HCRecoveryThreshold
 	s.db.Save(&existing.BackendGroup)
 
 	// Delete old backends and create new ones
@@ -247,9 +249,16 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		if err := s.engine.ReloadConfig(); err != nil {
-			log.Printf("Failed to reload config: %v", err)
+			engine.Logger.Error("Failed to reload config: " + err.Error())
 		}
 	}()
 
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(engine.Logger.GetLogs()); err != nil {
+		http.Error(w, "Failed to encode logs", http.StatusInternalServerError)
+	}
 }

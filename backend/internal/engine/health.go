@@ -72,45 +72,36 @@ func (hc *HealthChecker) loop(ctx context.Context) {
 }
 
 func (hc *HealthChecker) checkAll() {
-	var groups []models.BackendGroup
-	if err := hc.db.Preload("Backends").Find(&groups).Error; err != nil {
-		log.Printf("HealthChecker DB error: %v", err)
+	var backends []models.BackendServer
+	if err := hc.db.Find(&backends).Error; err != nil {
+		Logger.Error(fmt.Sprintf("HealthChecker DB error: %v", err))
 		return
 	}
 
-	for _, group := range groups {
-		if !group.HCEnabled {
+	for _, backend := range backends {
+		if !backend.Enabled || !backend.HCEnabled {
 			continue
 		}
-		
-		for _, backend := range group.Backends {
-			if !backend.Enabled {
-				continue
-			}
-
-			// In a real implementation we would track state across ticks
-			// For this MVP, we perform synchronous checks just to show architecture
-			go hc.checkBackend(group, backend)
-		}
+		go hc.checkBackend(backend)
 	}
 }
 
-func (hc *HealthChecker) checkBackend(group models.BackendGroup, backend models.BackendServer) {
+func (hc *HealthChecker) checkBackend(backend models.BackendServer) {
 	port := backend.Port
-	if group.HCPort > 0 {
-		port = group.HCPort
+	if backend.HCPort > 0 {
+		port = backend.HCPort
 	}
 	target := fmt.Sprintf("%s:%d", backend.Address, port)
-	timeout := time.Duration(group.HCTimeout) * time.Second
+	timeout := time.Duration(backend.HCTimeout) * time.Second
 	if timeout == 0 {
 		timeout = 2 * time.Second
 	}
 
 	isUp := false
 
-	if group.HCProtocol == "http" || group.HCProtocol == "https" {
-		scheme := group.HCProtocol
-		path := group.HCPath
+	if backend.HCProtocol == "http" || backend.HCProtocol == "https" {
+		scheme := backend.HCProtocol
+		path := backend.HCPath
 		if path == "" {
 			path = "/"
 		}
@@ -124,7 +115,7 @@ func (hc *HealthChecker) checkBackend(group models.BackendGroup, backend models.
 		if resp != nil {
 			resp.Body.Close()
 		}
-	} else if group.HCProtocol == "udp" {
+	} else if backend.HCProtocol == "udp" {
 		conn, err := net.DialTimeout("udp", target, timeout)
 		if err == nil {
 			isUp = true
@@ -154,9 +145,9 @@ func (hc *HealthChecker) checkBackend(group models.BackendGroup, backend models.
 		statusStr := "UP 🟢"
 		if !isUp {
 			statusStr = "DOWN 🔴"
-			log.Printf("HealthCheck FAILED for %s (%s)", backend.Name, target)
+			Logger.Warn(fmt.Sprintf("HealthCheck FAILED for %s (%s)", backend.Name, target))
 		} else {
-			log.Printf("HealthCheck OK for %s (%s)", backend.Name, target)
+			Logger.Info(fmt.Sprintf("HealthCheck OK for %s (%s)", backend.Name, target))
 		}
 		
 		msg := fmt.Sprintf("Backend **%s** (%s) is now %s", backend.Name, target, statusStr)

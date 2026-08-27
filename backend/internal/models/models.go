@@ -47,16 +47,6 @@ type BackendGroup struct {
 	ID        uint           `gorm:"primarykey" json:"id"`
 	Name      string         `json:"name"`
 	Backends  []BackendServer `json:"backends" gorm:"foreignKey:GroupID"`
-	
-	// Health Check settings
-	HCEnabled   bool   `json:"hc_enabled"`
-	HCProtocol  string `json:"hc_protocol"` // http, tcp
-	HCPort      int    `json:"hc_port"`     // Optional override port for HC
-	HCPath      string `json:"hc_path"`
-	HCInterval  int    `json:"hc_interval"` // in seconds
-	HCTimeout   int    `json:"hc_timeout"`
-	HCFailureThreshold int `json:"hc_failure_threshold"`
-	HCRecoveryThreshold int `json:"hc_recovery_threshold"`
 }
 
 type BackendServer struct {
@@ -69,6 +59,16 @@ type BackendServer struct {
 	Enabled   bool           `json:"enabled" gorm:"default:true"`
 	Backup    bool           `json:"backup" gorm:"default:false"` // Backup server
 	MaxConns  int            `json:"max_conns" gorm:"default:0"`
+
+	// Health Check settings
+	HCEnabled   bool   `json:"hc_enabled"`
+	HCProtocol  string `json:"hc_protocol"` // http, tcp
+	HCPort      int    `json:"hc_port"`     // Optional override port for HC
+	HCPath      string `json:"hc_path"`
+	HCInterval  int    `json:"hc_interval"` // in seconds
+	HCTimeout   int    `json:"hc_timeout"`
+	HCFailureThreshold int `json:"hc_failure_threshold"`
+	HCRecoveryThreshold int `json:"hc_recovery_threshold"`
 	
 	// State (Not persisted in DB, but tracked by HealthChecker)
 	Status    string         `gorm:"-" json:"status"` // UP, DOWN, DISABLED, DRAIN

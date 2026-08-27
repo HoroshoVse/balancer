@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom"
-import { Activity, LayoutDashboard, Server } from "lucide-react"
+import { Activity, LayoutDashboard, Server, Settings as SettingsIcon, Terminal } from "lucide-react"
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
@@ -31,8 +31,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
               to="/settings"
               className="flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground transition-all hover:text-primary"
             >
-              <Server className="h-4 w-4" /> {/* Use appropriate icon if possible, Server is fine or import Settings icon */}
+              <SettingsIcon className="h-4 w-4" />
               Settings
+            </Link>
+            <Link
+              to="/logs"
+              className="flex items-center gap-3 rounded-lg px-3 py-2 text-muted-foreground transition-all hover:text-primary"
+            >
+              <Terminal className="h-4 w-4" />
+              Logs
             </Link>
           </div>
         </nav>

@@ -21,16 +21,33 @@ interface BackendNode {
   enabled: boolean
   backup: boolean
   max_conns: number
+  status?: string
+  hc_enabled?: boolean
+  hc_protocol?: string
+  hc_port?: number
+  hc_path?: string
+  hc_interval?: number
+  hc_timeout?: number
+  hc_failure_threshold?: number
+  hc_recovery_threshold?: number
 }
 
 const emptyBackend = (): BackendNode => ({
-  name: "",
-  address: "",
-  port: 80,
+  name: "Node 1",
+  address: "127.0.0.1",
+  port: 8080,
   weight: 1,
   enabled: true,
   backup: false,
-  max_conns: 0
+  max_conns: 0,
+  hc_enabled: true,
+  hc_protocol: "http",
+  hc_port: 0,
+  hc_path: "/",
+  hc_interval: 10,
+  hc_timeout: 5,
+  hc_failure_threshold: 3,
+  hc_recovery_threshold: 2
 })
 
 const selectClass = "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
@@ -65,16 +82,6 @@ export default function LoadBalancers() {
   const [stickyEnabled, setStickyEnabled] = useState(false)
   const [stickyType, setStickyType] = useState("ip")
 
-  // Health Checks
-  const [hcEnabled, setHcEnabled] = useState(true)
-  const [hcProtocol, setHcProtocol] = useState("http")
-  const [hcPort, setHcPort] = useState(0)
-  const [hcPath, setHcPath] = useState("/")
-  const [hcInterval, setHcInterval] = useState(10)
-  const [hcTimeout, setHcTimeout] = useState(5)
-  const [hcFailure, setHcFailure] = useState(3)
-  const [hcRecovery, setHcRecovery] = useState(2)
-
   // Backend Nodes
   const [backends, setBackends] = useState<BackendNode[]>([emptyBackend()])
 
@@ -85,8 +92,6 @@ export default function LoadBalancers() {
     setHttp3Enabled(false)
     setProxyProtocolEnabled(false); setProxyProtocolVersion(2)
     setStickyEnabled(false); setStickyType("ip")
-    setHcEnabled(true); setHcProtocol("http"); setHcPort(0); setHcPath("/")
-    setHcInterval(10); setHcTimeout(5); setHcFailure(3); setHcRecovery(2)
     setBackends([emptyBackend()])
   }
 
@@ -140,14 +145,6 @@ export default function LoadBalancers() {
       sticky_session_type: stickyType,
       backend_group: {
         name: name + " Group",
-        hc_enabled: hcEnabled,
-        hc_protocol: hcProtocol,
-        hc_port: hcPort,
-        hc_path: hcPath,
-        hc_interval: hcInterval,
-        hc_timeout: hcTimeout,
-        hc_failure_threshold: hcFailure,
-        hc_recovery_threshold: hcRecovery,
         backends: backends.filter(b => b.address.trim()).map(b => ({
           name: b.name || b.address,
           address: b.address,
@@ -155,7 +152,15 @@ export default function LoadBalancers() {
           weight: b.weight,
           enabled: b.enabled,
           backup: b.backup,
-          max_conns: b.max_conns
+          max_conns: b.max_conns,
+          hc_enabled: b.hc_enabled,
+          hc_protocol: b.hc_protocol,
+          hc_port: b.hc_port,
+          hc_path: b.hc_path,
+          hc_interval: b.hc_interval,
+          hc_timeout: b.hc_timeout,
+          hc_failure_threshold: b.hc_failure_threshold,
+          hc_recovery_threshold: b.hc_recovery_threshold
         }))
       }
     }
@@ -194,29 +199,12 @@ export default function LoadBalancers() {
     setStickyType(lb.sticky_session_type || "ip")
     
     if (lb.backend_group) {
-      setHcEnabled(lb.backend_group.hc_enabled ?? true)
-      setHcProtocol(lb.backend_group.hc_protocol || "http")
-      setHcPort(lb.backend_group.hc_port || 0)
-      setHcPath(lb.backend_group.hc_path || "/")
-      setHcInterval(lb.backend_group.hc_interval || 10)
-      setHcTimeout(lb.backend_group.hc_timeout || 5)
-      setHcFailure(lb.backend_group.hc_failure_threshold || 3)
-      setHcRecovery(lb.backend_group.hc_recovery_threshold || 2)
-      
       if (lb.backend_group.backends && lb.backend_group.backends.length > 0) {
         setBackends(lb.backend_group.backends)
       } else {
         setBackends([emptyBackend()])
       }
     } else {
-      setHcEnabled(true)
-      setHcProtocol("http")
-      setHcPort(0)
-      setHcPath("/")
-      setHcInterval(10)
-      setHcTimeout(5)
-      setHcFailure(3)
-      setHcRecovery(2)
       setBackends([emptyBackend()])
     }
     
@@ -247,14 +235,6 @@ export default function LoadBalancers() {
       sticky_session_type: stickyType,
       backend_group: {
         name: name + " Group",
-        hc_enabled: hcEnabled,
-        hc_protocol: hcProtocol,
-        hc_port: hcPort,
-        hc_path: hcPath,
-        hc_interval: hcInterval,
-        hc_timeout: hcTimeout,
-        hc_failure_threshold: hcFailure,
-        hc_recovery_threshold: hcRecovery,
         backends: backends.filter(b => b.address.trim()).map(b => ({
           name: b.name || b.address,
           address: b.address,
@@ -262,7 +242,15 @@ export default function LoadBalancers() {
           weight: b.weight,
           enabled: b.enabled !== undefined ? b.enabled : true,
           backup: b.backup || false,
-          max_conns: b.max_conns || 0
+          max_conns: b.max_conns || 0,
+          hc_enabled: b.hc_enabled,
+          hc_protocol: b.hc_protocol,
+          hc_port: b.hc_port,
+          hc_path: b.hc_path,
+          hc_interval: b.hc_interval,
+          hc_timeout: b.hc_timeout,
+          hc_failure_threshold: b.hc_failure_threshold,
+          hc_recovery_threshold: b.hc_recovery_threshold
         }))
       }
     }
@@ -473,56 +461,7 @@ export default function LoadBalancers() {
                 <Button variant="outline" onClick={addBackend} className="w-full">+ Add Backend Node</Button>
               </div>
 
-              {/* === HEALTH CHECKS === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Health Checks</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={hcEnabled} onChange={e => setHcEnabled(e.target.checked)} id="hc-enabled" />
-                  <label htmlFor="hc-enabled" className="text-sm font-medium">Enable Health Checks</label>
-                </div>
-                {hcEnabled && (
-                  <div className="space-y-3 ml-7">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Protocol</label>
-                        <select className={selectClass} value={hcProtocol} onChange={e => setHcProtocol(e.target.value)}>
-                          <option value="http">HTTP</option>
-                          <option value="tcp">TCP</option>
-                          <option value="udp">UDP</option>
-                        </select>
-                      </div>
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Port (0 = same as node)</label>
-                        <Input type="number" value={hcPort} onChange={e => setHcPort(parseInt(e.target.value) || 0)} min={0} placeholder="0" />
-                      </div>
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Path</label>
-                        <Input value={hcPath} onChange={e => setHcPath(e.target.value)} placeholder="/" />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Interval (sec)</label>
-                        <Input type="number" value={hcInterval} onChange={e => setHcInterval(parseInt(e.target.value) || 10)} />
-                      </div>
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Timeout (sec)</label>
-                        <Input type="number" value={hcTimeout} onChange={e => setHcTimeout(parseInt(e.target.value) || 5)} />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Failure Threshold</label>
-                        <Input type="number" value={hcFailure} onChange={e => setHcFailure(parseInt(e.target.value) || 3)} />
-                      </div>
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Recovery Threshold</label>
-                        <Input type="number" value={hcRecovery} onChange={e => setHcRecovery(parseInt(e.target.value) || 2)} />
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
+
 
               {/* === CREATE BUTTON === */}
               <Button onClick={handleCreate} className="w-full mt-2" size="lg">Create Load Balancer</Button>
@@ -690,62 +629,45 @@ export default function LoadBalancers() {
                           Backup (standby)
                         </label>
                       </div>
+                      
+                      {/* Backend-level Health Checks */}
+                      <div className="col-span-3 border-t pt-3 mt-2">
+                        <div className="flex items-center gap-3 mb-2">
+                          <input type="checkbox" className={checkboxClass} checked={b.hc_enabled ?? true} onChange={e => updateBackend(i, "hc_enabled", e.target.checked)} id={`edit-hc-enabled-${i}`} />
+                          <label htmlFor={`edit-hc-enabled-${i}`} className="text-xs font-medium">Enable Health Checks</label>
+                        </div>
+                        {(b.hc_enabled ?? true) && (
+                          <div className="grid grid-cols-4 gap-3">
+                            <div className="grid gap-1">
+                              <label className="text-xs text-muted-foreground">Protocol</label>
+                              <select className={selectClass} value={b.hc_protocol || "http"} onChange={e => updateBackend(i, "hc_protocol", e.target.value)}>
+                                <option value="http">HTTP</option>
+                                <option value="tcp">TCP</option>
+                                <option value="udp">UDP</option>
+                              </select>
+                            </div>
+                            <div className="grid gap-1">
+                              <label className="text-xs text-muted-foreground">Port</label>
+                              <Input type="number" value={b.hc_port || 0} onChange={e => updateBackend(i, "hc_port", parseInt(e.target.value) || 0)} />
+                            </div>
+                            <div className="grid gap-1">
+                              <label className="text-xs text-muted-foreground">Path</label>
+                              <Input value={b.hc_path || "/"} onChange={e => updateBackend(i, "hc_path", e.target.value)} />
+                            </div>
+                            <div className="grid gap-1">
+                              <label className="text-xs text-muted-foreground">Interval</label>
+                              <Input type="number" value={b.hc_interval || 10} onChange={e => updateBackend(i, "hc_interval", parseInt(e.target.value) || 10)} />
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
                 <Button variant="outline" onClick={addBackend} className="w-full">+ Add Backend Node</Button>
               </div>
 
-              {/* === HEALTH CHECKS === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Health Checks</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={hcEnabled} onChange={e => setHcEnabled(e.target.checked)} id="edit-hc-enabled" />
-                  <label htmlFor="edit-hc-enabled" className="text-sm font-medium">Enable Health Checks</label>
-                </div>
-                {hcEnabled && (
-                  <div className="space-y-3 ml-7">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Protocol</label>
-                        <select className={selectClass} value={hcProtocol} onChange={e => setHcProtocol(e.target.value)}>
-                          <option value="http">HTTP</option>
-                          <option value="tcp">TCP</option>
-                          <option value="udp">UDP</option>
-                        </select>
-                      </div>
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Port (0 = same as node)</label>
-                        <Input type="number" value={hcPort} onChange={e => setHcPort(parseInt(e.target.value) || 0)} min={0} placeholder="0" />
-                      </div>
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Path</label>
-                        <Input value={hcPath} onChange={e => setHcPath(e.target.value)} placeholder="/" />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Interval (sec)</label>
-                        <Input type="number" value={hcInterval} onChange={e => setHcInterval(parseInt(e.target.value) || 10)} />
-                      </div>
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Timeout (sec)</label>
-                        <Input type="number" value={hcTimeout} onChange={e => setHcTimeout(parseInt(e.target.value) || 5)} />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Failure Threshold</label>
-                        <Input type="number" value={hcFailure} onChange={e => setHcFailure(parseInt(e.target.value) || 3)} />
-                      </div>
-                      <div className="grid gap-2">
-                        <label className="text-sm font-medium">Recovery Threshold</label>
-                        <Input type="number" value={hcRecovery} onChange={e => setHcRecovery(parseInt(e.target.value) || 2)} />
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
+
 
               {/* === UPDATE BUTTON === */}
               <Button onClick={handleUpdate} className="w-full mt-2" size="lg">Update Load Balancer</Button>
@@ -774,7 +696,11 @@ export default function LoadBalancers() {
             <TableBody>
               {loadBalancers.map((lb) => (
                 <TableRow key={lb.id}>
-                  <TableCell className="font-medium">{lb.name}</TableCell>
+                  <TableCell className="font-medium">
+                    <Link to={`/lbs/${lb.id}`} className="hover:underline text-blue-500">
+                      {lb.name}
+                    </Link>
+                  </TableCell>
                   <TableCell>{lb.listen_ip}:{lb.listen_port}</TableCell>
                   <TableCell>
                     <Badge variant="outline">{lb.protocol?.toUpperCase()}</Badge>
@@ -785,12 +711,10 @@ export default function LoadBalancers() {
                     <div className="flex flex-col gap-1">
                       <Badge variant="secondary">{lb.backend_group?.backends?.length || 0} nodes</Badge>
                       <div className="flex flex-wrap gap-1 mt-1">
-                        {lb.backend_group?.backends?.map((b: any) => {
-                           // For MVP we just show green for enabled, but ideally we'd have real health state here
-                           // Real health state is tracked in the backend healthChecker instance
+                        {lb.backend_group?.backends?.map((b: any, i: number) => {
                            return (
-                             <div key={b.id} className="flex items-center gap-1 text-[10px] text-muted-foreground" title={`${b.address}:${b.port}`}>
-                               <div className={`w-2 h-2 rounded-full ${b.enabled ? 'bg-green-500' : 'bg-red-500'}`} />
+                             <div key={b.id || i} className="flex items-center gap-1 text-[10px] text-muted-foreground" title={`${b.address}:${b.port}`}>
+                               <div className={`w-2 h-2 rounded-full ${b.status === 'UP' ? 'bg-green-500' : (b.status === 'DOWN' ? 'bg-red-500' : 'bg-gray-500')}`} title={b.status || 'UNKNOWN'} />
                                {b.name || b.address}
                              </div>
                            )

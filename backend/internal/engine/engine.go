@@ -24,7 +24,7 @@ func NewEngine(db *gorm.DB) *Engine {
 }
 
 func (e *Engine) Start() error {
-	log.Println("Starting Engine...")
+	Logger.Info("Starting Engine...")
 	e.healthChecker.Start()
 	e.healthChecker.SetOnChange(func() {
 		e.mu.RLock()
@@ -57,7 +57,7 @@ func (e *Engine) ReloadConfig() error {
 		e.activeBalancers[lb.ID] = inst
 		go func(l models.LoadBalancer, instance *LoadBalancerInstance) {
 			if err := instance.Start(); err != nil {
-				log.Printf("Failed to start LB %s: %v", l.Name, err)
+				Logger.Error(fmt.Sprintf("Failed to start LB %s: %v", l.Name, err))
 			}
 		}(lb, inst)
 	}
@@ -71,4 +71,8 @@ func (e *Engine) Stop() {
 	for _, inst := range e.activeBalancers {
 		inst.Stop()
 	}
+}
+
+func (e *Engine) GetHealthState(backendID uint) bool {
+    return e.healthChecker.IsHealthy(backendID)
 }
