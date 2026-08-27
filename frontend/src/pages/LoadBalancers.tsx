@@ -621,6 +621,29 @@ export default function LoadBalancers() {
                         </div>
                       </div>
                     )}
+                    {!acmeEnabled && (
+                      <div className="grid gap-4 ml-7 mt-2">
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">Certificate (PEM string)</label>
+                          <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
+                            value={certData} onChange={e => setCertData(e.target.value)} placeholder="-----BEGIN CERTIFICATE-----..." />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">Private Key (PEM string)</label>
+                          <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
+                            value={keyData} onChange={e => setKeyData(e.target.value)} placeholder="-----BEGIN PRIVATE KEY-----..." />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">OR Certificate Path (on server)</label>
+                          <Input value={certPath} onChange={e => setCertPath(e.target.value)} placeholder="/app/certs/server.crt" />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">OR Private Key Path (on server)</label>
+                          <Input value={keyPath} onChange={e => setKeyPath(e.target.value)} placeholder="/app/certs/server.key" />
+                        </div>
+                        <p className="text-xs text-muted-foreground">Paste the certificate contents OR specify paths on the server. Leave empty for self-signed.</p>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
