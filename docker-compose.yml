@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:80"
+      - "8443:443"
+      - "8443:443/udp" # for QUIC/HTTP3
+      - "8080:8080" # API & UI port
+    volumes:
+      - ./backend/certs:/app/certs
+      - ./backend/data:/app/data
+    environment:
+      - DB_DSN=postgres://balacer:balacer@db:5432/balacer?sslmode=disable
+      - DEV_MODE=true
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: balacer
+      POSTGRES_PASSWORD: balacer
+      POSTGRES_DB: balacer
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "54432:5432"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+
+volumes:
+  postgres_data:

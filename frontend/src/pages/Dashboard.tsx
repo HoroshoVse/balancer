@@ -1,0 +1,122 @@
+import { useState, useEffect } from "react"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Activity, Server, ArrowUpRight, ArrowDownRight } from "lucide-react"
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+
+const data = [
+  { name: '10:00', traffic: 4000, errors: 24 },
+  { name: '10:05', traffic: 3000, errors: 13 },
+  { name: '10:10', traffic: 2000, errors: 98 },
+  { name: '10:15', traffic: 2780, errors: 39 },
+  { name: '10:20', traffic: 1890, errors: 48 },
+  { name: '10:25', traffic: 2390, errors: 38 },
+  { name: '10:30', traffic: 3490, errors: 43 },
+];
+
+export default function Dashboard() {
+  const [metrics, setMetrics] = useState({
+    total_requests: 0,
+    healthy_backends: 0,
+    total_backends: 0,
+    average_latency_ms: 0,
+    error_rate_percent: 0,
+  })
+
+  useEffect(() => {
+    const fetchMetrics = () => {
+      const token = localStorage.getItem("token")
+      fetch("http://localhost:8080/api/v1/metrics/overview", {
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
+      })
+        .then(res => {
+          if (res.status === 401) {
+             localStorage.removeItem("token")
+             window.location.href = "/login"
+          }
+          return res.json()
+        })
+        .then(data => setMetrics(data))
+        .catch(console.error)
+    }
+    
+    fetchMetrics() // Initial fetch
+    const interval = setInterval(fetchMetrics, 3000)
+    return () => clearInterval(interval)
+  }, [])
+
+  return (
+    <div className="grid gap-4 md:gap-8">
+      <div className="grid gap-4 md:grid-cols-2 md:gap-8 lg:grid-cols-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Total Requests</CardTitle>
+            <Activity className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{metrics.total_requests.toLocaleString()}</div>
+            <p className="text-xs text-muted-foreground">+19% from last hour</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Healthy Backends</CardTitle>
+            <Server className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{metrics.healthy_backends} / {metrics.total_backends}</div>
+            <p className="text-xs text-green-500 flex items-center">
+              <ArrowUpRight className="h-4 w-4 mr-1" />
+              All systems operational
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Average Latency</CardTitle>
+            <Activity className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{metrics.average_latency_ms.toFixed(0)}ms</div>
+            <p className="text-xs text-muted-foreground">Current window</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Error Rate</CardTitle>
+            <Activity className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{metrics.error_rate_percent.toFixed(2)}%</div>
+            <p className="text-xs text-red-500 flex items-center">
+              <ArrowDownRight className="h-4 w-4 mr-1" />
+              Slight increase
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+      
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
+        <Card className="col-span-4">
+          <CardHeader>
+            <CardTitle>Traffic Overview</CardTitle>
+          </CardHeader>
+          <CardContent className="pl-2">
+            <div className="h-[300px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={data}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="name" className="text-xs" />
+                  <YAxis className="text-xs" />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="traffic" stroke="#8884d8" strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  )
+}
