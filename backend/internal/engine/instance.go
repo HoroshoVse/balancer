@@ -317,6 +317,7 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			strategy: l.strategy,
 			proxyProtocolEnabled: l.Config.ProxyProtocolEnabled,
 			proxyProtocolVersion: l.Config.ProxyProtocolVersion,
+			http2Enabled:         l.Config.BackendHTTP2Enabled,
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			Logger.Error(fmt.Sprintf("Proxy error to %s: %v", r.URL.String(), err))
@@ -491,6 +492,7 @@ type backendTransport struct {
 	
 	proxyProtocolEnabled bool
 	proxyProtocolVersion int
+	http2Enabled         bool
 }
 
 func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -505,12 +507,19 @@ func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		hostWithoutPort = req.Host
 	}
 	
-	tr.ForceAttemptHTTP2 = true
-	
-	tr.TLSClientConfig = &tls.Config{
-		InsecureSkipVerify: true,
-		ServerName:         hostWithoutPort, // pass original SNI to the backend
-		NextProtos:         []string{"h2", "http/1.1"}, // Enable HTTP/2 for backends like AdGuard DoH
+	if t.http2Enabled {
+		tr.ForceAttemptHTTP2 = true
+		tr.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         hostWithoutPort,
+			NextProtos:         []string{"h2", "http/1.1"},
+		}
+	} else {
+		tr.ForceAttemptHTTP2 = false
+		tr.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         hostWithoutPort,
+		}
 	}
 	if t.proxyProtocolEnabled {
 		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {

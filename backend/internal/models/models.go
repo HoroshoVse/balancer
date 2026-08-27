@@ -33,8 +33,11 @@ type LoadBalancer struct {
 	ACMEStatus  string `json:"acme_status" gorm:"-"` // issuing, ok, error (not saved in db)
 	ACMEError   string `json:"acme_error" gorm:"-"` // error message if any (not saved in db)
 	
-	// HTTP/3 (QUIC)
+	// HTTP/3 (QUIC) for client connections
 	HTTP3Enabled bool `json:"http3_enabled"`
+	
+	// HTTP/2 to backend
+	BackendHTTP2Enabled bool `json:"backend_http2_enabled"`
 
 	// Proxy Protocol
 	ProxyProtocolEnabled bool `json:"proxy_protocol_enabled"`

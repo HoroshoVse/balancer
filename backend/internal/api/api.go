@@ -37,6 +37,7 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/v1/settings", s.corsMiddleware(AuthMiddleware(s.getSettings)))
 	mux.HandleFunc("/api/v1/settings/update", s.corsMiddleware(AuthMiddleware(s.updateSettings)))
 	mux.HandleFunc("/api/v1/logs", s.corsMiddleware(AuthMiddleware(s.getLogs)))
+	mux.HandleFunc("/api/v1/tools/test-connection", s.corsMiddleware(AuthMiddleware(s.testConnection)))
 
 	// Metrics
 	mux.Handle("/metrics", promhttp.Handler())
@@ -233,6 +234,7 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 	existing.ACMEEmail = input.ACMEEmail
 	existing.ACMEDomains = input.ACMEDomains
 	existing.HTTP3Enabled = input.HTTP3Enabled
+	existing.BackendHTTP2Enabled = input.BackendHTTP2Enabled
 	existing.ProxyProtocolEnabled = input.ProxyProtocolEnabled
 	existing.ProxyProtocolVersion = input.ProxyProtocolVersion
 	existing.StickySessionsEnabled = input.StickySessionsEnabled
