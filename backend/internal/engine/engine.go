@@ -2,6 +2,8 @@ package engine
 
 import (
 	"fmt"
+	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/balancer/backend/internal/models"
@@ -57,6 +59,10 @@ func (e *Engine) ReloadConfig() error {
 		e.activeBalancers[lb.ID] = inst
 		go func(l models.LoadBalancer, instance *LoadBalancerInstance) {
 			if err := instance.Start(); err != nil {
+				if err == http.ErrServerClosed || strings.Contains(err.Error(), "use of closed network connection") {
+					// Normal shutdown
+					return
+				}
 				Logger.Error(fmt.Sprintf("Failed to start LB %s: %v", l.Name, err))
 			}
 		}(lb, inst)
