@@ -229,6 +229,7 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 	existing.BackendGroup.Name = input.BackendGroup.Name
 	existing.BackendGroup.HCEnabled = input.BackendGroup.HCEnabled
 	existing.BackendGroup.HCProtocol = input.BackendGroup.HCProtocol
+	existing.BackendGroup.HCPort = input.BackendGroup.HCPort
 	existing.BackendGroup.HCPath = input.BackendGroup.HCPath
 	existing.BackendGroup.HCInterval = input.BackendGroup.HCInterval
 	existing.BackendGroup.HCTimeout = input.BackendGroup.HCTimeout

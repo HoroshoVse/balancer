@@ -51,6 +51,7 @@ type BackendGroup struct {
 	// Health Check settings
 	HCEnabled   bool   `json:"hc_enabled"`
 	HCProtocol  string `json:"hc_protocol"` // http, tcp
+	HCPort      int    `json:"hc_port"`     // Optional override port for HC
 	HCPath      string `json:"hc_path"`
 	HCInterval  int    `json:"hc_interval"` // in seconds
 	HCTimeout   int    `json:"hc_timeout"`

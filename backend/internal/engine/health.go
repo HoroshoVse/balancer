@@ -96,7 +96,11 @@ func (hc *HealthChecker) checkAll() {
 }
 
 func (hc *HealthChecker) checkBackend(group models.BackendGroup, backend models.BackendServer) {
-	target := fmt.Sprintf("%s:%d", backend.Address, backend.Port)
+	port := backend.Port
+	if group.HCPort > 0 {
+		port = group.HCPort
+	}
+	target := fmt.Sprintf("%s:%d", backend.Address, port)
 	timeout := time.Duration(group.HCTimeout) * time.Second
 	if timeout == 0 {
 		timeout = 2 * time.Second

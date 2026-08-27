@@ -68,6 +68,7 @@ export default function LoadBalancers() {
   // Health Checks
   const [hcEnabled, setHcEnabled] = useState(true)
   const [hcProtocol, setHcProtocol] = useState("http")
+  const [hcPort, setHcPort] = useState(0)
   const [hcPath, setHcPath] = useState("/")
   const [hcInterval, setHcInterval] = useState(10)
   const [hcTimeout, setHcTimeout] = useState(5)
@@ -84,7 +85,7 @@ export default function LoadBalancers() {
     setHttp3Enabled(false)
     setProxyProtocolEnabled(false); setProxyProtocolVersion(2)
     setStickyEnabled(false); setStickyType("ip")
-    setHcEnabled(true); setHcProtocol("http"); setHcPath("/")
+    setHcEnabled(true); setHcProtocol("http"); setHcPort(0); setHcPath("/")
     setHcInterval(10); setHcTimeout(5); setHcFailure(3); setHcRecovery(2)
     setBackends([emptyBackend()])
   }
@@ -141,6 +142,7 @@ export default function LoadBalancers() {
         name: name + " Group",
         hc_enabled: hcEnabled,
         hc_protocol: hcProtocol,
+        hc_port: hcPort,
         hc_path: hcPath,
         hc_interval: hcInterval,
         hc_timeout: hcTimeout,
@@ -194,6 +196,7 @@ export default function LoadBalancers() {
     if (lb.backend_group) {
       setHcEnabled(lb.backend_group.hc_enabled ?? true)
       setHcProtocol(lb.backend_group.hc_protocol || "http")
+      setHcPort(lb.backend_group.hc_port || 0)
       setHcPath(lb.backend_group.hc_path || "/")
       setHcInterval(lb.backend_group.hc_interval || 10)
       setHcTimeout(lb.backend_group.hc_timeout || 5)
@@ -208,6 +211,7 @@ export default function LoadBalancers() {
     } else {
       setHcEnabled(true)
       setHcProtocol("http")
+      setHcPort(0)
       setHcPath("/")
       setHcInterval(10)
       setHcTimeout(5)
@@ -245,6 +249,7 @@ export default function LoadBalancers() {
         name: name + " Group",
         hc_enabled: hcEnabled,
         hc_protocol: hcProtocol,
+        hc_port: hcPort,
         hc_path: hcPath,
         hc_interval: hcInterval,
         hc_timeout: hcTimeout,
@@ -485,6 +490,10 @@ export default function LoadBalancers() {
                         </select>
                       </div>
                       <div className="grid gap-2">
+                        <label className="text-sm font-medium">Port (0 = same as node)</label>
+                        <Input type="number" value={hcPort} onChange={e => setHcPort(parseInt(e.target.value) || 0)} min={0} placeholder="0" />
+                      </div>
+                      <div className="grid gap-2">
                         <label className="text-sm font-medium">Path</label>
                         <Input value={hcPath} onChange={e => setHcPath(e.target.value)} placeholder="/" />
                       </div>
@@ -700,6 +709,10 @@ export default function LoadBalancers() {
                           <option value="http">HTTP</option>
                           <option value="tcp">TCP</option>
                         </select>
+                      </div>
+                      <div className="grid gap-2">
+                        <label className="text-sm font-medium">Port (0 = same as node)</label>
+                        <Input type="number" value={hcPort} onChange={e => setHcPort(parseInt(e.target.value) || 0)} min={0} placeholder="0" />
                       </div>
                       <div className="grid gap-2">
                         <label className="text-sm font-medium">Path</label>
