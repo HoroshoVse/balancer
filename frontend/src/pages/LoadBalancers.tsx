@@ -74,6 +74,10 @@ export default function LoadBalancers() {
   const [acmeEnabled, setAcmeEnabled] = useState(false)
   const [acmeEmail, setAcmeEmail] = useState("")
   const [acmeDomains, setAcmeDomains] = useState("")
+  const [certPath, setCertPath] = useState("")
+  const [keyPath, setKeyPath] = useState("")
+  const [certData, setCertData] = useState("")
+  const [keyData, setKeyData] = useState("")
 
   // HTTP/3
   const [http3Enabled, setHttp3Enabled] = useState(false)
@@ -93,6 +97,8 @@ export default function LoadBalancers() {
     setName(""); setListenIp("0.0.0.0"); setListenPort(80)
     setProtocol("http"); setAlgorithm("round_robin")
     setSslEnabled(false); setAcmeEnabled(false); setAcmeEmail(""); setAcmeDomains("")
+    setCertPath(""); setKeyPath("")
+    setCertData(""); setKeyData("")
     setHttp3Enabled(false)
     setProxyProtocolEnabled(false); setProxyProtocolVersion(2)
     setStickyEnabled(false); setStickyType("ip")
@@ -140,6 +146,11 @@ export default function LoadBalancers() {
       protocol,
       algorithm,
       ssl_enabled: sslEnabled,
+      auto_ssl: acmeEnabled, // Map auto_ssl for backward compatibility or future use
+      cert_path: certPath,
+      key_path: keyPath,
+      cert_data: certData,
+      key_data: keyData,
       acme_enabled: acmeEnabled,
       acme_email: acmeEmail,
       acme_domains: acmeDomains,
@@ -196,7 +207,11 @@ export default function LoadBalancers() {
     setProtocol(lb.protocol || "http")
     setAlgorithm(lb.algorithm || "round_robin")
     setSslEnabled(lb.ssl_enabled)
-    setAcmeEnabled(lb.acme_enabled)
+    setAcmeEnabled(lb.acme_enabled || lb.auto_ssl)
+    setCertPath(lb.cert_path || "")
+    setKeyPath(lb.key_path || "")
+    setCertData(lb.cert_data || "")
+    setKeyData(lb.key_data || "")
     setAcmeEmail(lb.acme_email || "")
     setAcmeDomains(lb.acme_domains || "")
     setHttp3Enabled(lb.http3_enabled || false)
@@ -233,6 +248,11 @@ export default function LoadBalancers() {
       protocol,
       algorithm,
       ssl_enabled: sslEnabled,
+      auto_ssl: acmeEnabled, // Map auto_ssl
+      cert_path: certPath,
+      key_path: keyPath,
+      cert_data: certData,
+      key_data: keyData,
       acme_enabled: acmeEnabled,
       acme_email: acmeEmail,
       acme_domains: acmeDomains,
@@ -392,6 +412,29 @@ export default function LoadBalancers() {
                           <label className="text-sm font-medium">Domains (Comma separated)</label>
                           <Input value={acmeDomains} onChange={e => setAcmeDomains(e.target.value)} placeholder="example.com, www.example.com" />
                         </div>
+                      </div>
+                    )}
+                    {!acmeEnabled && (
+                      <div className="grid gap-4 ml-7 mt-2">
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">Certificate (PEM string)</label>
+                          <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
+                            value={certData} onChange={e => setCertData(e.target.value)} placeholder="-----BEGIN CERTIFICATE-----..." />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">Private Key (PEM string)</label>
+                          <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
+                            value={keyData} onChange={e => setKeyData(e.target.value)} placeholder="-----BEGIN PRIVATE KEY-----..." />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">OR Certificate Path (on server)</label>
+                          <Input value={certPath} onChange={e => setCertPath(e.target.value)} placeholder="/app/certs/server.crt" />
+                        </div>
+                        <div className="grid gap-2">
+                          <label className="text-sm font-medium">OR Private Key Path (on server)</label>
+                          <Input value={keyPath} onChange={e => setKeyPath(e.target.value)} placeholder="/app/certs/server.key" />
+                        </div>
+                        <p className="text-xs text-muted-foreground">Paste the certificate contents OR specify paths on the server. Leave empty for self-signed.</p>
                       </div>
                     )}
                   </div>
