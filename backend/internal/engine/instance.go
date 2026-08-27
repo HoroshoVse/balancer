@@ -46,6 +46,13 @@ type LoadBalancerInstance struct {
 	
 	acmeStatus atomic.Value // Store string
 	acmeError  atomic.Value // Store string
+
+	udpSessions sync.Map // Map clientAddr(string) -> *udpSession
+}
+
+type udpSession struct {
+	conn     net.Conn
+	lastSeen time.Time
 }
 
 func NewLoadBalancerInstance(config models.LoadBalancer, db *gorm.DB, hc *HealthChecker) *LoadBalancerInstance {
@@ -231,8 +238,30 @@ func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
 	Logger.Info(fmt.Sprintf("UDP LoadBalancer %s listening on %s", l.Config.Name, addr))
 
 	go func() {
-		<-ctx.Done()
-		conn.Close()
+		cleanupTicker := time.NewTicker(10 * time.Second)
+		defer cleanupTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				l.udpSessions.Range(func(key, value interface{}) bool {
+					sess := value.(*udpSession)
+					sess.conn.Close()
+					return true
+				})
+				conn.Close()
+				return
+			case <-cleanupTicker.C:
+				now := time.Now()
+				l.udpSessions.Range(func(key, value interface{}) bool {
+					sess := value.(*udpSession)
+					if now.Sub(sess.lastSeen) > 30*time.Second {
+						sess.conn.Close()
+						l.udpSessions.Delete(key)
+					}
+					return true
+				})
+			}
+		}
 	}()
 
 	buf := make([]byte, 65507)
@@ -251,11 +280,27 @@ func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
 		data := make([]byte, n)
 		copy(data, buf[:n])
 		
-		go l.handleUDPPacket(data, clientAddr)
+		go l.handleUDPPacket(data, clientAddr, conn)
 	}
 }
 
-func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPAddr) {
+func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPAddr, clientConn *net.UDPConn) {
+	clientKey := clientAddr.String()
+
+	// Check for existing session
+	if val, ok := l.udpSessions.Load(clientKey); ok {
+		sess := val.(*udpSession)
+		sess.lastSeen = time.Now()
+		_, err := sess.conn.Write(data)
+		if err != nil {
+			sess.conn.Close()
+			l.udpSessions.Delete(clientKey)
+		} else {
+			return
+		}
+	}
+
+	// Create new session
 	backends := l.backends.Load().([]*models.BackendServer)
 	target := l.strategy.Next(backends, clientAddr.IP.String())
 	if target == nil {
@@ -268,9 +313,40 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 		Logger.Error(fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
 		return
 	}
-	defer backendConn.Close()
 
-	backendConn.Write(data)
+	sess := &udpSession{
+		conn:     backendConn,
+		lastSeen: time.Now(),
+	}
+	l.udpSessions.Store(clientKey, sess)
+
+	// Write the initial packet
+	_, err = backendConn.Write(data)
+	if err != nil {
+		backendConn.Close()
+		l.udpSessions.Delete(clientKey)
+		return
+	}
+
+	// Goroutine to read from backend and write back to client
+	go func() {
+		buf := make([]byte, 65507)
+		for {
+			n, err := backendConn.Read(buf)
+			if err != nil {
+				backendConn.Close()
+				l.udpSessions.Delete(clientKey)
+				return
+			}
+			sess.lastSeen = time.Now()
+			_, err = clientConn.WriteToUDP(buf[:n], clientAddr)
+			if err != nil {
+				backendConn.Close()
+				l.udpSessions.Delete(clientKey)
+				return
+			}
+		}
+	}()
 }
 
 func parsePort(s string) int {
@@ -299,7 +375,7 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			*req = *req.WithContext(ctx)
 			
 			scheme := "http"
-			if target.TLSEnabled { 
+			if l.Config.Protocol == "https" || target.TLSEnabled { 
 				scheme = "https"
 			}
 			
@@ -320,7 +396,7 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			strategy: l.strategy,
 			proxyProtocolEnabled: l.Config.ProxyProtocolEnabled,
 			proxyProtocolVersion: l.Config.ProxyProtocolVersion,
-			http2Enabled:         l.Config.BackendHTTP2Enabled,
+			http2Enabled:         l.Config.Protocol == "https" || l.Config.BackendHTTP2Enabled,
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			Logger.Error(fmt.Sprintf("Proxy error to %s: %v", r.URL.String(), err))

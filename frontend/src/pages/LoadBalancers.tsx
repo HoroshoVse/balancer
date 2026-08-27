@@ -107,6 +107,16 @@ export default function LoadBalancers() {
     setBackends([emptyBackend()])
   }
 
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  const handleProtocolChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const p = e.target.value
+    setProtocol(p)
+    if (p === "http") setListenPort(80)
+    else if (p === "https" || p === "tcp") setListenPort(443)
+    else if (p === "udp") setListenPort(53)
+  }
+
   // --- Backend node helpers ---
   const addBackend = () => setBackends([...backends, emptyBackend()])
   const removeBackend = (i: number) => setBackends(backends.filter((_, idx) => idx !== i))
@@ -387,7 +397,7 @@ export default function LoadBalancers() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="grid gap-2">
                     <label className="text-sm font-medium">Protocol</label>
-                    <select className={selectClass} value={protocol} onChange={e => setProtocol(e.target.value)}>
+                    <select className={selectClass} value={protocol} onChange={handleProtocolChange}>
                       <option value="http">HTTP</option>
                       <option value="https">HTTPS</option>
                       <option value="tcp">TCP</option>
@@ -406,114 +416,115 @@ export default function LoadBalancers() {
                 </div>
               </div>
 
-              {/* === PROXY PROTOCOL === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Proxy Protocol (Real IP)</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={proxyProtocolEnabled} onChange={e => setProxyProtocolEnabled(e.target.checked)} id="pp-enabled" />
-                  <label htmlFor="pp-enabled" className="text-sm font-medium">Enable Proxy Protocol</label>
-                </div>
-                {proxyProtocolEnabled && (
-                  <div className="grid gap-2 ml-7">
-                    <label className="text-sm font-medium">Version</label>
-                    <select className={selectClass} value={proxyProtocolVersion} onChange={e => setProxyProtocolVersion(parseInt(e.target.value))}>
-                      <option value={1}>v1 (text)</option>
-                      <option value={2}>v2 (binary, recommended)</option>
-                    </select>
-                    <p className="text-xs text-muted-foreground">Passes real client IP to backend servers through the PROXY protocol header.</p>
-                  </div>
-                )}
+              {/* === ADVANCED SETTINGS TOGGLE === */}
+              <div>
+                <Button variant="outline" onClick={() => setShowAdvanced(!showAdvanced)} className="w-full justify-start text-muted-foreground border-dashed">
+                  {showAdvanced ? "▾ Hide Advanced Settings" : "▸ Show Advanced Settings"}
+                </Button>
               </div>
 
-              {/* === SSL / TLS === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">SSL / TLS</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={sslEnabled} onChange={e => setSslEnabled(e.target.checked)} id="ssl-enabled" />
-                  <label htmlFor="ssl-enabled" className="text-sm font-medium">Enable SSL/TLS</label>
-                </div>
-                {sslEnabled && (
-                  <div className="space-y-3 ml-7">
+              {showAdvanced && (
+                <div className="space-y-6 pt-4 border-t mt-4">
+                  {/* === PROXY PROTOCOL === */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Proxy Protocol (Real IP)</h3>
                     <div className="flex items-center gap-3">
-                      <input type="checkbox" className={checkboxClass} checked={acmeEnabled} onChange={e => setAcmeEnabled(e.target.checked)} id="acme-enabled" />
-                      <label htmlFor="acme-enabled" className="text-sm font-medium">Auto-SSL (Let's Encrypt / ACME)</label>
+                      <input type="checkbox" className={checkboxClass} checked={proxyProtocolEnabled} onChange={e => setProxyProtocolEnabled(e.target.checked)} id="pp-enabled" />
+                      <label htmlFor="pp-enabled" className="text-sm font-medium">Enable Proxy Protocol</label>
                     </div>
-                    {acmeEnabled && (
-                      <div className="grid gap-3 ml-7">
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">ACME Email</label>
-                          <Input value={acmeEmail} onChange={e => setAcmeEmail(e.target.value)} placeholder="admin@example.com" />
-                        </div>
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">Domains (Comma separated)</label>
-                          <Input value={acmeDomains} onChange={e => setAcmeDomains(e.target.value)} placeholder="example.com, www.example.com" />
-                        </div>
-                      </div>
-                    )}
-                    {!acmeEnabled && (
-                      <div className="grid gap-4 ml-7 mt-2">
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">Certificate (PEM string)</label>
-                          <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
-                            value={certData} onChange={e => setCertData(e.target.value)} placeholder="-----BEGIN CERTIFICATE-----..." />
-                        </div>
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">Private Key (PEM string)</label>
-                          <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
-                            value={keyData} onChange={e => setKeyData(e.target.value)} placeholder="-----BEGIN PRIVATE KEY-----..." />
-                        </div>
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">OR Certificate Path (on server)</label>
-                          <Input value={certPath} onChange={e => setCertPath(e.target.value)} placeholder="/app/certs/server.crt" />
-                        </div>
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">OR Private Key Path (on server)</label>
-                          <Input value={keyPath} onChange={e => setKeyPath(e.target.value)} placeholder="/app/certs/server.key" />
-                        </div>
-                        <p className="text-xs text-muted-foreground">Paste the certificate contents OR specify paths on the server. Leave empty for self-signed.</p>
+                    {proxyProtocolEnabled && (
+                      <div className="grid gap-2 ml-7">
+                        <label className="text-sm font-medium">Version</label>
+                        <select className={selectClass} value={proxyProtocolVersion} onChange={e => setProxyProtocolVersion(parseInt(e.target.value))}>
+                          <option value={1}>v1 (text)</option>
+                          <option value={2}>v2 (binary, recommended)</option>
+                        </select>
+                        <p className="text-xs text-muted-foreground">Passes real client IP to backend servers through the PROXY protocol header.</p>
                       </div>
                     )}
                   </div>
-                )}
-              </div>
 
-              {/* === HTTP/3 === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">HTTP/3 (QUIC)</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={http3Enabled} onChange={e => setHttp3Enabled(e.target.checked)} id="h3-enabled" />
-                  <label htmlFor="h3-enabled" className="text-sm font-medium">Enable HTTP/3</label>
-                </div>
-                <p className="text-xs text-muted-foreground ml-7">Enables QUIC-based HTTP/3 for faster connections. Requires SSL.</p>
-              </div>
-
-              {/* === Backend HTTP/2 === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Backend Connections</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={backendHttp2Enabled} onChange={e => setBackendHttp2Enabled(e.target.checked)} id="backend-h2-enabled" />
-                  <label htmlFor="backend-h2-enabled" className="text-sm font-medium">Enable HTTP/2 to Backends</label>
-                </div>
-                <p className="text-xs text-muted-foreground ml-7">Required for DNS-over-HTTPS (DoH) servers like AdGuard Home. Disables HTTP/1.1 fallback.</p>
-              </div>
-
-              {/* === STICKY SESSIONS === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Sticky Sessions</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={stickyEnabled} onChange={e => setStickyEnabled(e.target.checked)} id="sticky-enabled" />
-                  <label htmlFor="sticky-enabled" className="text-sm font-medium">Enable Sticky Sessions</label>
-                </div>
-                {stickyEnabled && (
-                  <div className="grid gap-2 ml-7">
-                    <label className="text-sm font-medium">Type</label>
-                    <select className={selectClass} value={stickyType} onChange={e => setStickyType(e.target.value)}>
-                      <option value="ip">Source IP</option>
-                      <option value="cookie">Cookie</option>
-                    </select>
+                  {/* === SSL / TLS === */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">SSL / TLS (For incoming connections)</h3>
+                    <div className="flex items-center gap-3">
+                      <input type="checkbox" className={checkboxClass} checked={sslEnabled} onChange={e => setSslEnabled(e.target.checked)} id="ssl-enabled" />
+                      <label htmlFor="ssl-enabled" className="text-sm font-medium">Enable SSL/TLS</label>
+                    </div>
+                    {sslEnabled && (
+                      <div className="space-y-3 ml-7">
+                        <div className="flex items-center gap-3">
+                          <input type="checkbox" className={checkboxClass} checked={acmeEnabled} onChange={e => setAcmeEnabled(e.target.checked)} id="acme-enabled" />
+                          <label htmlFor="acme-enabled" className="text-sm font-medium">Auto-SSL (Let's Encrypt / ACME)</label>
+                        </div>
+                        {acmeEnabled && (
+                          <div className="grid gap-3 ml-7">
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">ACME Email</label>
+                              <Input value={acmeEmail} onChange={e => setAcmeEmail(e.target.value)} placeholder="admin@example.com" />
+                            </div>
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">Domains (Comma separated)</label>
+                              <Input value={acmeDomains} onChange={e => setAcmeDomains(e.target.value)} placeholder="example.com, www.example.com" />
+                            </div>
+                          </div>
+                        )}
+                        {!acmeEnabled && (
+                          <div className="grid gap-4 ml-7 mt-2">
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">Certificate (PEM string)</label>
+                              <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
+                                value={certData} onChange={e => setCertData(e.target.value)} placeholder="-----BEGIN CERTIFICATE-----..." />
+                            </div>
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">Private Key (PEM string)</label>
+                              <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
+                                value={keyData} onChange={e => setKeyData(e.target.value)} placeholder="-----BEGIN PRIVATE KEY-----..." />
+                            </div>
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">OR Certificate Path (on server)</label>
+                              <Input value={certPath} onChange={e => setCertPath(e.target.value)} placeholder="/app/certs/server.crt" />
+                            </div>
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">OR Private Key Path (on server)</label>
+                              <Input value={keyPath} onChange={e => setKeyPath(e.target.value)} placeholder="/app/certs/server.key" />
+                            </div>
+                            <p className="text-xs text-muted-foreground">Paste the certificate contents OR specify paths on the server. Leave empty for self-signed.</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+
+                  {/* === HTTP/3 === */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">HTTP/3 (QUIC)</h3>
+                    <div className="flex items-center gap-3">
+                      <input type="checkbox" className={checkboxClass} checked={http3Enabled} onChange={e => setHttp3Enabled(e.target.checked)} id="h3-enabled" />
+                      <label htmlFor="h3-enabled" className="text-sm font-medium">Enable HTTP/3</label>
+                    </div>
+                    <p className="text-xs text-muted-foreground ml-7">Enables QUIC-based HTTP/3 for faster connections. Requires SSL.</p>
+                  </div>
+
+                  {/* === STICKY SESSIONS === */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Sticky Sessions</h3>
+                    <div className="flex items-center gap-3">
+                      <input type="checkbox" className={checkboxClass} checked={stickyEnabled} onChange={e => setStickyEnabled(e.target.checked)} id="sticky-enabled" />
+                      <label htmlFor="sticky-enabled" className="text-sm font-medium">Enable Sticky Sessions</label>
+                    </div>
+                    {stickyEnabled && (
+                      <div className="grid gap-2 ml-7">
+                        <label className="text-sm font-medium">Type</label>
+                        <select className={selectClass} value={stickyType} onChange={e => setStickyType(e.target.value)}>
+                          <option value="ip">Source IP</option>
+                          <option value="cookie">Cookie</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* === BACKEND NODES === */}
               <div className="space-y-3">
@@ -570,10 +581,6 @@ export default function LoadBalancers() {
                           <input type="checkbox" className={checkboxClass} checked={b.backup} onChange={e => updateBackend(i, "backup", e.target.checked)} />
                           Backup (standby)
                         </label>
-                        <label className="flex items-center gap-2 text-xs text-blue-500" title="Connect to this node via HTTPS instead of HTTP">
-                          <input type="checkbox" className={checkboxClass} checked={b.tls_enabled || false} onChange={e => updateBackend(i, "tls_enabled", e.target.checked)} />
-                          HTTPS
-                        </label>
                       </div>
                     </div>
                   </div>
@@ -616,7 +623,7 @@ export default function LoadBalancers() {
                 <div className="grid grid-cols-2 gap-4">
                   <div className="grid gap-2">
                     <label className="text-sm font-medium">Protocol</label>
-                    <select className={selectClass} value={protocol} onChange={e => setProtocol(e.target.value)}>
+                    <select className={selectClass} value={protocol} onChange={handleProtocolChange}>
                       <option value="http">HTTP</option>
                       <option value="https">HTTPS</option>
                       <option value="tcp">TCP</option>
@@ -635,114 +642,115 @@ export default function LoadBalancers() {
                 </div>
               </div>
 
-              {/* === PROXY PROTOCOL === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Proxy Protocol (Real IP)</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={proxyProtocolEnabled} onChange={e => setProxyProtocolEnabled(e.target.checked)} id="edit-pp-enabled" />
-                  <label htmlFor="edit-pp-enabled" className="text-sm font-medium">Enable Proxy Protocol</label>
-                </div>
-                {proxyProtocolEnabled && (
-                  <div className="grid gap-2 ml-7">
-                    <label className="text-sm font-medium">Version</label>
-                    <select className={selectClass} value={proxyProtocolVersion} onChange={e => setProxyProtocolVersion(parseInt(e.target.value))}>
-                      <option value={1}>v1 (text)</option>
-                      <option value={2}>v2 (binary, recommended)</option>
-                    </select>
-                    <p className="text-xs text-muted-foreground">Passes real client IP to backend servers through the PROXY protocol header.</p>
-                  </div>
-                )}
+              {/* === ADVANCED SETTINGS TOGGLE === */}
+              <div>
+                <Button variant="outline" onClick={() => setShowAdvanced(!showAdvanced)} className="w-full justify-start text-muted-foreground border-dashed">
+                  {showAdvanced ? "▾ Hide Advanced Settings" : "▸ Show Advanced Settings"}
+                </Button>
               </div>
 
-              {/* === SSL / TLS === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">SSL / TLS</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={sslEnabled} onChange={e => setSslEnabled(e.target.checked)} id="edit-ssl-enabled" />
-                  <label htmlFor="edit-ssl-enabled" className="text-sm font-medium">Enable SSL/TLS</label>
-                </div>
-                {sslEnabled && (
-                  <div className="space-y-3 ml-7">
+              {showAdvanced && (
+                <div className="space-y-6 pt-4 border-t mt-4">
+                  {/* === PROXY PROTOCOL === */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Proxy Protocol (Real IP)</h3>
                     <div className="flex items-center gap-3">
-                      <input type="checkbox" className={checkboxClass} checked={acmeEnabled} onChange={e => setAcmeEnabled(e.target.checked)} id="edit-acme-enabled" />
-                      <label htmlFor="edit-acme-enabled" className="text-sm font-medium">Auto-SSL (Let's Encrypt / ACME)</label>
+                      <input type="checkbox" className={checkboxClass} checked={proxyProtocolEnabled} onChange={e => setProxyProtocolEnabled(e.target.checked)} id="edit-pp-enabled" />
+                      <label htmlFor="edit-pp-enabled" className="text-sm font-medium">Enable Proxy Protocol</label>
                     </div>
-                    {acmeEnabled && (
-                      <div className="grid gap-3 ml-7">
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">ACME Email</label>
-                          <Input value={acmeEmail} onChange={e => setAcmeEmail(e.target.value)} placeholder="admin@example.com" />
-                        </div>
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">Domains (Comma separated)</label>
-                          <Input value={acmeDomains} onChange={e => setAcmeDomains(e.target.value)} placeholder="example.com, www.example.com" />
-                        </div>
-                      </div>
-                    )}
-                    {!acmeEnabled && (
-                      <div className="grid gap-4 ml-7 mt-2">
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">Certificate (PEM string)</label>
-                          <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
-                            value={certData} onChange={e => setCertData(e.target.value)} placeholder="-----BEGIN CERTIFICATE-----..." />
-                        </div>
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">Private Key (PEM string)</label>
-                          <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
-                            value={keyData} onChange={e => setKeyData(e.target.value)} placeholder="-----BEGIN PRIVATE KEY-----..." />
-                        </div>
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">OR Certificate Path (on server)</label>
-                          <Input value={certPath} onChange={e => setCertPath(e.target.value)} placeholder="/app/certs/server.crt" />
-                        </div>
-                        <div className="grid gap-2">
-                          <label className="text-sm font-medium">OR Private Key Path (on server)</label>
-                          <Input value={keyPath} onChange={e => setKeyPath(e.target.value)} placeholder="/app/certs/server.key" />
-                        </div>
-                        <p className="text-xs text-muted-foreground">Paste the certificate contents OR specify paths on the server. Leave empty for self-signed.</p>
+                    {proxyProtocolEnabled && (
+                      <div className="grid gap-2 ml-7">
+                        <label className="text-sm font-medium">Version</label>
+                        <select className={selectClass} value={proxyProtocolVersion} onChange={e => setProxyProtocolVersion(parseInt(e.target.value))}>
+                          <option value={1}>v1 (text)</option>
+                          <option value={2}>v2 (binary, recommended)</option>
+                        </select>
+                        <p className="text-xs text-muted-foreground">Passes real client IP to backend servers through the PROXY protocol header.</p>
                       </div>
                     )}
                   </div>
-                )}
-              </div>
 
-              {/* === HTTP/3 === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">HTTP/3 (QUIC)</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={http3Enabled} onChange={e => setHttp3Enabled(e.target.checked)} id="edit-h3-enabled" />
-                  <label htmlFor="edit-h3-enabled" className="text-sm font-medium">Enable HTTP/3</label>
-                </div>
-                <p className="text-xs text-muted-foreground ml-7">Enables QUIC-based HTTP/3 for faster connections. Requires SSL.</p>
-              </div>
-
-              {/* === Backend HTTP/2 === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Backend Connections</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={backendHttp2Enabled} onChange={e => setBackendHttp2Enabled(e.target.checked)} id="edit-backend-h2-enabled" />
-                  <label htmlFor="edit-backend-h2-enabled" className="text-sm font-medium">Enable HTTP/2 to Backends</label>
-                </div>
-                <p className="text-xs text-muted-foreground ml-7">Required for DNS-over-HTTPS (DoH) servers like AdGuard Home. Disables HTTP/1.1 fallback.</p>
-              </div>
-
-              {/* === STICKY SESSIONS === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Sticky Sessions</h3>
-                <div className="flex items-center gap-3">
-                  <input type="checkbox" className={checkboxClass} checked={stickyEnabled} onChange={e => setStickyEnabled(e.target.checked)} id="edit-sticky-enabled" />
-                  <label htmlFor="edit-sticky-enabled" className="text-sm font-medium">Enable Sticky Sessions</label>
-                </div>
-                {stickyEnabled && (
-                  <div className="grid gap-2 ml-7">
-                    <label className="text-sm font-medium">Type</label>
-                    <select className={selectClass} value={stickyType} onChange={e => setStickyType(e.target.value)}>
-                      <option value="ip">Source IP</option>
-                      <option value="cookie">Cookie</option>
-                    </select>
+                  {/* === SSL / TLS === */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">SSL / TLS (For incoming connections)</h3>
+                    <div className="flex items-center gap-3">
+                      <input type="checkbox" className={checkboxClass} checked={sslEnabled} onChange={e => setSslEnabled(e.target.checked)} id="edit-ssl-enabled" />
+                      <label htmlFor="edit-ssl-enabled" className="text-sm font-medium">Enable SSL/TLS</label>
+                    </div>
+                    {sslEnabled && (
+                      <div className="space-y-3 ml-7">
+                        <div className="flex items-center gap-3">
+                          <input type="checkbox" className={checkboxClass} checked={acmeEnabled} onChange={e => setAcmeEnabled(e.target.checked)} id="edit-acme-enabled" />
+                          <label htmlFor="edit-acme-enabled" className="text-sm font-medium">Auto-SSL (Let's Encrypt / ACME)</label>
+                        </div>
+                        {acmeEnabled && (
+                          <div className="grid gap-3 ml-7">
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">ACME Email</label>
+                              <Input value={acmeEmail} onChange={e => setAcmeEmail(e.target.value)} placeholder="admin@example.com" />
+                            </div>
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">Domains (Comma separated)</label>
+                              <Input value={acmeDomains} onChange={e => setAcmeDomains(e.target.value)} placeholder="example.com, www.example.com" />
+                            </div>
+                          </div>
+                        )}
+                        {!acmeEnabled && (
+                          <div className="grid gap-4 ml-7 mt-2">
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">Certificate (PEM string)</label>
+                              <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
+                                value={certData} onChange={e => setCertData(e.target.value)} placeholder="-----BEGIN CERTIFICATE-----..." />
+                            </div>
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">Private Key (PEM string)</label>
+                              <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
+                                value={keyData} onChange={e => setKeyData(e.target.value)} placeholder="-----BEGIN PRIVATE KEY-----..." />
+                            </div>
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">OR Certificate Path (on server)</label>
+                              <Input value={certPath} onChange={e => setCertPath(e.target.value)} placeholder="/app/certs/server.crt" />
+                            </div>
+                            <div className="grid gap-2">
+                              <label className="text-sm font-medium">OR Private Key Path (on server)</label>
+                              <Input value={keyPath} onChange={e => setKeyPath(e.target.value)} placeholder="/app/certs/server.key" />
+                            </div>
+                            <p className="text-xs text-muted-foreground">Paste the certificate contents OR specify paths on the server. Leave empty for self-signed.</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+
+                  {/* === HTTP/3 === */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">HTTP/3 (QUIC)</h3>
+                    <div className="flex items-center gap-3">
+                      <input type="checkbox" className={checkboxClass} checked={http3Enabled} onChange={e => setHttp3Enabled(e.target.checked)} id="edit-h3-enabled" />
+                      <label htmlFor="edit-h3-enabled" className="text-sm font-medium">Enable HTTP/3</label>
+                    </div>
+                    <p className="text-xs text-muted-foreground ml-7">Enables QUIC-based HTTP/3 for faster connections. Requires SSL.</p>
+                  </div>
+
+                  {/* === STICKY SESSIONS === */}
+                  <div className="space-y-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Sticky Sessions</h3>
+                    <div className="flex items-center gap-3">
+                      <input type="checkbox" className={checkboxClass} checked={stickyEnabled} onChange={e => setStickyEnabled(e.target.checked)} id="edit-sticky-enabled" />
+                      <label htmlFor="edit-sticky-enabled" className="text-sm font-medium">Enable Sticky Sessions</label>
+                    </div>
+                    {stickyEnabled && (
+                      <div className="grid gap-2 ml-7">
+                        <label className="text-sm font-medium">Type</label>
+                        <select className={selectClass} value={stickyType} onChange={e => setStickyType(e.target.value)}>
+                          <option value="ip">Source IP</option>
+                          <option value="cookie">Cookie</option>
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* === BACKEND NODES === */}
               <div className="space-y-3">
