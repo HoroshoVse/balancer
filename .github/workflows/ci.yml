@@ -71,11 +71,11 @@ jobs:
         with:
           context: ./backend
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/balancer-backend:latest
+          tags: ghcr.io/horoshovse/balancer-backend:latest
 
       - name: Build and push Frontend image
         uses: docker/build-push-action@v4
         with:
           context: ./frontend
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/balancer-frontend:latest
+          tags: ghcr.io/horoshovse/balancer-frontend:latest
