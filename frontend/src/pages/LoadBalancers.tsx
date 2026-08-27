@@ -115,6 +115,32 @@ export default function LoadBalancers() {
     setBackends(updated)
   }
 
+  const [testResults, setTestResults] = useState<Record<number, string>>({})
+  const testBackendConnection = async (i: number) => {
+    const b = backends[i]
+    if (!b.address) return
+    setTestResults({ ...testResults, [i]: "Testing..." })
+    try {
+      const res = await fetch(`${API_BASE()}/api/v1/tools/test-connection`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem("token")}`
+        },
+        body: JSON.stringify({
+          address: b.address,
+          port: b.port,
+          tls_enabled: b.tls_enabled || false,
+          http2_enabled: backendHttp2Enabled
+        })
+      })
+      const data = await res.json()
+      setTestResults({ ...testResults, [i]: data.logs || "Unknown error" })
+    } catch (e) {
+      setTestResults({ ...testResults, [i]: "Network error trying to test connection" })
+    }
+  }
+
   // --- Fetch ---
   const fetchLoadBalancers = () => {
     fetch(`${API_BASE()}/api/v1/load-balancers`, {
@@ -489,11 +515,19 @@ export default function LoadBalancers() {
                 {backends.map((b, i) => (
                   <div key={i} className="border rounded-lg p-4 space-y-3 relative">
                     <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium">Node #{i + 1}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">Node #{i + 1}</span>
+                        <Button variant="outline" size="sm" className="h-6 px-2 text-xs ml-2" onClick={() => testBackendConnection(i)}>Test Connection</Button>
+                      </div>
                       {backends.length > 1 && (
                         <Button variant="ghost" size="sm" className="text-destructive h-6 px-2" onClick={() => removeBackend(i)}>✕ Remove</Button>
                       )}
                     </div>
+                    {testResults[i] && (
+                      <div className="text-xs bg-slate-900 text-slate-300 p-2 rounded whitespace-pre-wrap font-mono">
+                        {testResults[i]}
+                      </div>
+                    )}
                     <div className="grid grid-cols-3 gap-3">
                       <div className="grid gap-1">
                         <label className="text-xs text-muted-foreground">Name</label>
