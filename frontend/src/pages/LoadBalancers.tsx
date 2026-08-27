@@ -8,10 +8,10 @@ export default function LoadBalancers() {
   const [loadBalancers, setLoadBalancers] = useState<any[]>([])
 
   useEffect(() => {
-    const token = localStorage.getItem("token")
-    fetch("http://localhost:8080/api/v1/load-balancers", {
+    const API_URL = `http://${window.location.hostname}:8080/api/v1/load-balancers`
+    fetch(API_URL, {
       headers: {
-        "Authorization": `Bearer ${token}`
+        "Authorization": `Bearer ${localStorage.getItem("token")}`
       }
     })
       .then(res => {

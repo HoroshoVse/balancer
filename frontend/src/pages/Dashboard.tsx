@@ -25,7 +25,8 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchMetrics = () => {
       const token = localStorage.getItem("token")
-      fetch("http://localhost:8080/api/v1/metrics/overview", {
+      const API_URL = `http://${window.location.hostname}:8080/api/v1/metrics/overview`
+      fetch(API_URL, {
         headers: {
           "Authorization": `Bearer ${token}`
         }

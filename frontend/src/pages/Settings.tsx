@@ -12,7 +12,8 @@ export function Settings() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch("/api/v1/settings", {
+    const API_URL = `http://${window.location.hostname}:8080/api/v1/settings`
+    fetch(API_URL, {
       headers: { "Authorization": `Bearer ${localStorage.getItem("token")}` }
     })
       .then(r => r.json())
@@ -28,7 +29,8 @@ export function Settings() {
 
   const handleSave = async () => {
     try {
-      const res = await fetch("/api/v1/settings/update", {
+      const API_URL = `http://${window.location.hostname}:8080/api/v1/settings/update`
+      const res = await fetch(API_URL, {
         method: "POST",
         headers: { 
           "Authorization": `Bearer ${localStorage.getItem("token")}`,
