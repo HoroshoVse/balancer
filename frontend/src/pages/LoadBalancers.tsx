@@ -39,6 +39,8 @@ const checkboxClass = "h-4 w-4 rounded border-gray-300 text-primary focus:ring-p
 export default function LoadBalancers() {
   const [loadBalancers, setLoadBalancers] = useState<any[]>([])
   const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const [isEditOpen, setIsEditOpen] = useState(false)
+  const [editingId, setEditingId] = useState<number | null>(null)
 
   // --- Form State ---
   const [name, setName] = useState("")
@@ -169,6 +171,110 @@ export default function LoadBalancers() {
       fetchLoadBalancers()
     } catch {
       toast.error("Error creating load balancer")
+    }
+  }
+
+  // --- Edit / Update ---
+  const openEditModal = (lb: any) => {
+    setEditingId(lb.id)
+    setName(lb.name || "")
+    setListenIp(lb.listen_ip || "0.0.0.0")
+    setListenPort(lb.listen_port || 80)
+    setProtocol(lb.protocol || "http")
+    setAlgorithm(lb.algorithm || "round_robin")
+    setSslEnabled(lb.ssl_enabled || false)
+    setAcmeEnabled(lb.acme_enabled || false)
+    setAcmeEmail(lb.acme_email || "")
+    setHttp3Enabled(lb.http3_enabled || false)
+    setProxyProtocolEnabled(lb.proxy_protocol_enabled || false)
+    setProxyProtocolVersion(lb.proxy_protocol_version || 2)
+    setStickyEnabled(lb.sticky_sessions_enabled || false)
+    setStickyType(lb.sticky_session_type || "ip")
+    
+    if (lb.backend_group) {
+      setHcEnabled(lb.backend_group.hc_enabled ?? true)
+      setHcProtocol(lb.backend_group.hc_protocol || "http")
+      setHcPath(lb.backend_group.hc_path || "/")
+      setHcInterval(lb.backend_group.hc_interval || 10)
+      setHcTimeout(lb.backend_group.hc_timeout || 5)
+      setHcFailure(lb.backend_group.hc_failure_threshold || 3)
+      setHcRecovery(lb.backend_group.hc_recovery_threshold || 2)
+      
+      if (lb.backend_group.backends && lb.backend_group.backends.length > 0) {
+        setBackends(lb.backend_group.backends)
+      } else {
+        setBackends([emptyBackend()])
+      }
+    } else {
+      setHcEnabled(true)
+      setHcProtocol("http")
+      setHcPath("/")
+      setHcInterval(10)
+      setHcTimeout(5)
+      setHcFailure(3)
+      setHcRecovery(2)
+      setBackends([emptyBackend()])
+    }
+    
+    setIsEditOpen(true)
+  }
+
+  const handleUpdate = async () => {
+    if (!name.trim()) { toast.error("Name is required"); return }
+    if (backends.filter(b => b.address.trim()).length === 0) {
+      toast.error("Add at least one backend node"); return
+    }
+    if (editingId === null) return;
+
+    const payload = {
+      id: editingId,
+      name,
+      listen_ip: listenIp,
+      listen_port: listenPort,
+      protocol,
+      algorithm,
+      ssl_enabled: sslEnabled,
+      acme_enabled: acmeEnabled,
+      acme_email: acmeEmail,
+      http3_enabled: http3Enabled,
+      proxy_protocol_enabled: proxyProtocolEnabled,
+      proxy_protocol_version: proxyProtocolVersion,
+      sticky_sessions_enabled: stickyEnabled,
+      sticky_session_type: stickyType,
+      backend_group: {
+        name: name + " Group",
+        hc_enabled: hcEnabled,
+        hc_protocol: hcProtocol,
+        hc_path: hcPath,
+        hc_interval: hcInterval,
+        hc_timeout: hcTimeout,
+        hc_failure_threshold: hcFailure,
+        hc_recovery_threshold: hcRecovery,
+        backends: backends.filter(b => b.address.trim()).map(b => ({
+          name: b.name || b.address,
+          address: b.address,
+          port: b.port,
+          weight: b.weight,
+          enabled: b.enabled !== undefined ? b.enabled : true,
+          backup: b.backup || false,
+          max_conns: b.max_conns || 0
+        }))
+      }
+    }
+
+    try {
+      const res = await fetch(`${API_BASE()}/api/v1/load-balancers/update`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(payload)
+      })
+      if (!res.ok) throw new Error("Failed to update")
+      toast.success("Load Balancer updated!")
+      setIsEditOpen(false)
+      resetForm()
+      fetchLoadBalancers()
+    } catch {
+      toast.error("Error updating load balancer")
     }
   }
 
@@ -412,6 +518,223 @@ export default function LoadBalancers() {
             </div>
           </DialogContent>
         </Dialog>
+
+        <Dialog open={isEditOpen} onOpenChange={(open) => { setIsEditOpen(open); if (!open) resetForm() }}>
+          <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Edit Load Balancer</DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-6 py-4">
+
+              {/* === BASIC SETTINGS === */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Basic Settings</h3>
+                <div className="grid gap-2">
+                  <label className="text-sm font-medium">Name *</label>
+                  <Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Production HTTP" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-2">
+                    <label className="text-sm font-medium">Listen IP</label>
+                    <Input value={listenIp} onChange={e => setListenIp(e.target.value)} placeholder="0.0.0.0" />
+                  </div>
+                  <div className="grid gap-2">
+                    <label className="text-sm font-medium">Port</label>
+                    <Input type="number" value={listenPort} onChange={e => setListenPort(parseInt(e.target.value) || 80)} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-2">
+                    <label className="text-sm font-medium">Protocol</label>
+                    <select className={selectClass} value={protocol} onChange={e => setProtocol(e.target.value)}>
+                      <option value="http">HTTP</option>
+                      <option value="https">HTTPS</option>
+                      <option value="tcp">TCP</option>
+                    </select>
+                  </div>
+                  <div className="grid gap-2">
+                    <label className="text-sm font-medium">Algorithm</label>
+                    <select className={selectClass} value={algorithm} onChange={e => setAlgorithm(e.target.value)}>
+                      <option value="round_robin">Round Robin</option>
+                      <option value="least_conn">Least Connections</option>
+                      <option value="ip_hash">IP Hash</option>
+                      <option value="failover">Failover (Active-Passive)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* === PROXY PROTOCOL === */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Proxy Protocol (Real IP)</h3>
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" className={checkboxClass} checked={proxyProtocolEnabled} onChange={e => setProxyProtocolEnabled(e.target.checked)} id="edit-pp-enabled" />
+                  <label htmlFor="edit-pp-enabled" className="text-sm font-medium">Enable Proxy Protocol</label>
+                </div>
+                {proxyProtocolEnabled && (
+                  <div className="grid gap-2 ml-7">
+                    <label className="text-sm font-medium">Version</label>
+                    <select className={selectClass} value={proxyProtocolVersion} onChange={e => setProxyProtocolVersion(parseInt(e.target.value))}>
+                      <option value={1}>v1 (text)</option>
+                      <option value={2}>v2 (binary, recommended)</option>
+                    </select>
+                    <p className="text-xs text-muted-foreground">Passes real client IP to backend servers through the PROXY protocol header.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* === SSL / TLS === */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">SSL / TLS</h3>
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" className={checkboxClass} checked={sslEnabled} onChange={e => setSslEnabled(e.target.checked)} id="edit-ssl-enabled" />
+                  <label htmlFor="edit-ssl-enabled" className="text-sm font-medium">Enable SSL/TLS</label>
+                </div>
+                {sslEnabled && (
+                  <div className="space-y-3 ml-7">
+                    <div className="flex items-center gap-3">
+                      <input type="checkbox" className={checkboxClass} checked={acmeEnabled} onChange={e => setAcmeEnabled(e.target.checked)} id="edit-acme-enabled" />
+                      <label htmlFor="edit-acme-enabled" className="text-sm font-medium">Auto-SSL (Let's Encrypt / ACME)</label>
+                    </div>
+                    {acmeEnabled && (
+                      <div className="grid gap-2 ml-7">
+                        <label className="text-sm font-medium">ACME Email</label>
+                        <Input value={acmeEmail} onChange={e => setAcmeEmail(e.target.value)} placeholder="admin@example.com" />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* === HTTP/3 === */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">HTTP/3 (QUIC)</h3>
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" className={checkboxClass} checked={http3Enabled} onChange={e => setHttp3Enabled(e.target.checked)} id="edit-h3-enabled" />
+                  <label htmlFor="edit-h3-enabled" className="text-sm font-medium">Enable HTTP/3</label>
+                </div>
+                <p className="text-xs text-muted-foreground ml-7">Enables QUIC-based HTTP/3 for faster connections. Requires SSL.</p>
+              </div>
+
+              {/* === STICKY SESSIONS === */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Sticky Sessions</h3>
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" className={checkboxClass} checked={stickyEnabled} onChange={e => setStickyEnabled(e.target.checked)} id="edit-sticky-enabled" />
+                  <label htmlFor="edit-sticky-enabled" className="text-sm font-medium">Enable Sticky Sessions</label>
+                </div>
+                {stickyEnabled && (
+                  <div className="grid gap-2 ml-7">
+                    <label className="text-sm font-medium">Type</label>
+                    <select className={selectClass} value={stickyType} onChange={e => setStickyType(e.target.value)}>
+                      <option value="ip">Source IP</option>
+                      <option value="cookie">Cookie</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              {/* === BACKEND NODES === */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Backend Nodes *</h3>
+                {backends.map((b, i) => (
+                  <div key={i} className="border rounded-lg p-4 space-y-3 relative">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium">Node #{i + 1}</span>
+                      {backends.length > 1 && (
+                        <Button variant="ghost" size="sm" className="text-destructive h-6 px-2" onClick={() => removeBackend(i)}>✕ Remove</Button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="grid gap-1">
+                        <label className="text-xs text-muted-foreground">Name</label>
+                        <Input value={b.name} onChange={e => updateBackend(i, "name", e.target.value)} placeholder="App Node 1" />
+                      </div>
+                      <div className="grid gap-1">
+                        <label className="text-xs text-muted-foreground">Address *</label>
+                        <Input value={b.address} onChange={e => updateBackend(i, "address", e.target.value)} placeholder="192.168.1.10" />
+                      </div>
+                      <div className="grid gap-1">
+                        <label className="text-xs text-muted-foreground">Port</label>
+                        <Input type="number" value={b.port} onChange={e => updateBackend(i, "port", parseInt(e.target.value) || 80)} />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="grid gap-1">
+                        <label className="text-xs text-muted-foreground">Weight</label>
+                        <Input type="number" value={b.weight} onChange={e => updateBackend(i, "weight", parseInt(e.target.value) || 1)} min={1} />
+                      </div>
+                      <div className="grid gap-1">
+                        <label className="text-xs text-muted-foreground">Max Connections (0 = unlimited)</label>
+                        <Input type="number" value={b.max_conns} onChange={e => updateBackend(i, "max_conns", parseInt(e.target.value) || 0)} min={0} />
+                      </div>
+                      <div className="flex items-end gap-4 pb-1">
+                        <label className="flex items-center gap-2 text-xs">
+                          <input type="checkbox" className={checkboxClass} checked={b.enabled} onChange={e => updateBackend(i, "enabled", e.target.checked)} />
+                          Enabled
+                        </label>
+                        <label className="flex items-center gap-2 text-xs" title="Backup nodes only receive traffic when ALL primary nodes are down">
+                          <input type="checkbox" className={checkboxClass} checked={b.backup} onChange={e => updateBackend(i, "backup", e.target.checked)} />
+                          Backup (standby)
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <Button variant="outline" onClick={addBackend} className="w-full">+ Add Backend Node</Button>
+              </div>
+
+              {/* === HEALTH CHECKS === */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Health Checks</h3>
+                <div className="flex items-center gap-3">
+                  <input type="checkbox" className={checkboxClass} checked={hcEnabled} onChange={e => setHcEnabled(e.target.checked)} id="edit-hc-enabled" />
+                  <label htmlFor="edit-hc-enabled" className="text-sm font-medium">Enable Health Checks</label>
+                </div>
+                {hcEnabled && (
+                  <div className="space-y-3 ml-7">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="grid gap-2">
+                        <label className="text-sm font-medium">Protocol</label>
+                        <select className={selectClass} value={hcProtocol} onChange={e => setHcProtocol(e.target.value)}>
+                          <option value="http">HTTP</option>
+                          <option value="tcp">TCP</option>
+                        </select>
+                      </div>
+                      <div className="grid gap-2">
+                        <label className="text-sm font-medium">Path</label>
+                        <Input value={hcPath} onChange={e => setHcPath(e.target.value)} placeholder="/" />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="grid gap-2">
+                        <label className="text-sm font-medium">Interval (sec)</label>
+                        <Input type="number" value={hcInterval} onChange={e => setHcInterval(parseInt(e.target.value) || 10)} />
+                      </div>
+                      <div className="grid gap-2">
+                        <label className="text-sm font-medium">Timeout (sec)</label>
+                        <Input type="number" value={hcTimeout} onChange={e => setHcTimeout(parseInt(e.target.value) || 5)} />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="grid gap-2">
+                        <label className="text-sm font-medium">Failure Threshold</label>
+                        <Input type="number" value={hcFailure} onChange={e => setHcFailure(parseInt(e.target.value) || 3)} />
+                      </div>
+                      <div className="grid gap-2">
+                        <label className="text-sm font-medium">Recovery Threshold</label>
+                        <Input type="number" value={hcRecovery} onChange={e => setHcRecovery(parseInt(e.target.value) || 2)} />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* === UPDATE BUTTON === */}
+              <Button onClick={handleUpdate} className="w-full mt-2" size="lg">Update Load Balancer</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
 
       {/* === TABLE === */}
@@ -482,6 +805,7 @@ export default function LoadBalancers() {
                     </div>
                   </TableCell>
                   <TableCell className="text-right space-x-2">
+                    <Button variant="outline" size="sm" onClick={() => openEditModal(lb)}>Edit</Button>
                     <Button variant="destructive" size="sm" onClick={() => handleDelete(lb.id)}>Delete</Button>
                   </TableCell>
                 </TableRow>
