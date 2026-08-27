@@ -19,10 +19,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/net/http2"
+
 	"github.com/balancer/backend/internal/models"
 	"github.com/caddyserver/certmagic"
-	"github.com/quic-go/quic-go/http3"
 	"github.com/pires/go-proxyproto"
+	"github.com/quic-go/quic-go/http3"
 	"gorm.io/gorm"
 )
 
@@ -514,6 +516,7 @@ func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			ServerName:         hostWithoutPort,
 			NextProtos:         []string{"h2", "http/1.1"},
 		}
+		http2.ConfigureTransport(tr)
 	} else {
 		tr.ForceAttemptHTTP2 = false
 		tr.TLSClientConfig = &tls.Config{
