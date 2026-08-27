@@ -509,6 +509,11 @@ func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		hostWithoutPort = req.Host
 	}
 	
+	if target, ok := req.Context().Value("selected_backend").(*models.BackendServer); ok && target.SNI != "" {
+		hostWithoutPort = target.SNI
+		req.Host = target.SNI
+	}
+	
 	if t.http2Enabled {
 		tr.ForceAttemptHTTP2 = true
 		tr.TLSClientConfig = &tls.Config{

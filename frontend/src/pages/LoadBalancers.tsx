@@ -32,6 +32,7 @@ interface BackendNode {
   hc_timeout?: number
   hc_failure_threshold?: number
   hc_recovery_threshold?: number
+  sni?: string
 }
 
 const emptyBackend = (): BackendNode => ({
@@ -533,7 +534,7 @@ export default function LoadBalancers() {
                         {testResults[i]}
                       </div>
                     )}
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-4 gap-3">
                       <div className="grid gap-1">
                         <label className="text-xs text-muted-foreground">Name</label>
                         <Input value={b.name} onChange={e => updateBackend(i, "name", e.target.value)} placeholder="App Node 1" />
@@ -545,6 +546,10 @@ export default function LoadBalancers() {
                       <div className="grid gap-1">
                         <label className="text-xs text-muted-foreground">Port</label>
                         <Input type="number" value={b.port} onChange={e => updateBackend(i, "port", parseInt(e.target.value) || 80)} />
+                      </div>
+                      <div className="grid gap-1">
+                        <label className="text-xs text-muted-foreground" title="Override SNI and Host header">SNI / Host</label>
+                        <Input value={b.sni || ""} onChange={e => updateBackend(i, "sni", e.target.value)} placeholder="Override" />
                       </div>
                     </div>
                     <div className="grid grid-cols-3 gap-3">
@@ -758,7 +763,7 @@ export default function LoadBalancers() {
                         {testResults[i]}
                       </div>
                     )}
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-4 gap-3">
                       <div className="grid gap-1">
                         <label className="text-xs text-muted-foreground">Name</label>
                         <Input value={b.name} onChange={e => updateBackend(i, "name", e.target.value)} placeholder="App Node 1" />
@@ -770,6 +775,10 @@ export default function LoadBalancers() {
                       <div className="grid gap-1">
                         <label className="text-xs text-muted-foreground">Port</label>
                         <Input type="number" value={b.port} onChange={e => updateBackend(i, "port", parseInt(e.target.value) || 80)} />
+                      </div>
+                      <div className="grid gap-1">
+                        <label className="text-xs text-muted-foreground" title="Override SNI and Host header">SNI / Host</label>
+                        <Input value={b.sni || ""} onChange={e => updateBackend(i, "sni", e.target.value)} placeholder="Override" />
                       </div>
                     </div>
                     <div className="grid grid-cols-3 gap-3">

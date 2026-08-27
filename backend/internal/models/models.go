@@ -68,6 +68,7 @@ type BackendServer struct {
 	Backup    bool           `json:"backup" gorm:"default:false"` // Backup server
 	MaxConns  int            `json:"max_conns"` // Maximum concurrent connections
 	TLSEnabled bool          `json:"tls_enabled"` // proxy to backend via HTTPS
+	SNI        string        `json:"sni"`         // SNI and Host header override
 	// Health Check settings
 	HCEnabled   bool   `json:"hc_enabled"`
 	HCProtocol  string `json:"hc_protocol"` // http, tcp
