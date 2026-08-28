@@ -935,7 +935,7 @@ export default function LoadBalancers() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center space-x-2">
-                      <span className="text-xs text-muted-foreground">RPS: {lb.metrics?.total_requests || 0}</span>
+                      <span className="text-xs text-muted-foreground">Total: {lb.metrics?.total_requests || 0}</span>
                       <span className="text-xs text-muted-foreground">|</span>
                       <span className="text-xs text-muted-foreground">Err: {lb.metrics?.error_rate_percent?.toFixed(1) || 0}%</span>
                       <span className="text-xs text-muted-foreground">|</span>
