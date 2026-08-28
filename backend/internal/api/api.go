@@ -38,6 +38,7 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/v1/settings", s.corsMiddleware(AuthMiddleware(s.getSettings)))
 	mux.HandleFunc("/api/v1/settings/update", s.corsMiddleware(AuthMiddleware(s.updateSettings)))
 	mux.HandleFunc("/api/v1/load-balancers/history", s.corsMiddleware(AuthMiddleware(s.getLBMetricsHistory))) // Expected query param ?id=X
+	mux.HandleFunc("/api/v1/metrics/history", s.corsMiddleware(AuthMiddleware(s.getGlobalMetricsHistory)))
 	mux.HandleFunc("/api/v1/logs", s.corsMiddleware(AuthMiddleware(s.getLogs)))
 	mux.HandleFunc("/api/v1/tools/test-connection", s.corsMiddleware(AuthMiddleware(s.testConnection)))
 
@@ -67,6 +68,17 @@ func (s *Server) getBackends(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	
+	for i := range backends {
+		backends[i].Metrics = engine.Metrics.GetBackendMetrics(backends[i].ID)
+		isUp := s.engine.GetHealthState(backends[i].ID)
+		if isUp {
+			backends[i].Status = "UP"
+		} else {
+			backends[i].Status = "DOWN"
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(backends)
 }
@@ -106,15 +118,17 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getMetricsOverview(w http.ResponseWriter, r *http.Request) {
-	// Let's get backend status from the DB to count total vs healthy
-	var allBackends []models.BackendServer
-	s.db.Find(&allBackends)
+	var lbs []models.LoadBalancer
+	s.db.Preload("BackendGroup.Backends").Find(&lbs)
 
-	total := len(allBackends)
+	total := 0
 	healthy := 0
-	for _, b := range allBackends {
-		if b.Status == "UP" {
-			healthy++
+	for _, lb := range lbs {
+		for _, b := range lb.BackendGroup.Backends {
+			total++
+			if s.engine.GetHealthState(b.ID) {
+				healthy++
+			}
 		}
 	}
 
@@ -153,6 +167,7 @@ func (s *Server) getLoadBalancers(w http.ResponseWriter, r *http.Request) {
 			} else {
 				b.Status = "DOWN"
 			}
+			b.Metrics = engine.Metrics.GetBackendMetrics(b.ID)
 		}
 		status, errStr := s.engine.GetACMEStatus(lbs[i].ID)
 		lbs[i].ACMEStatus = status
@@ -308,5 +323,13 @@ func (s *Server) getLBMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	history := engine.Metrics.GetMetricsHistoryForLB(uint(id))
 	if err := json.NewEncoder(w).Encode(history); err != nil {
 		http.Error(w, "Failed to encode metrics history", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) getGlobalMetricsHistory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	history := engine.Metrics.GetGlobalMetricsHistory()
+	if err := json.NewEncoder(w).Encode(history); err != nil {
+		http.Error(w, "Failed to encode global metrics history", http.StatusInternalServerError)
 	}
 }

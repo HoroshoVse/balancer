@@ -22,6 +22,8 @@ export default function Dashboard() {
     error_rate_percent: 0,
   })
 
+  const [history, setHistory] = useState<any[]>([])
+
   useEffect(() => {
     const fetchMetrics = () => {
       const token = localStorage.getItem("token")
@@ -39,6 +41,16 @@ export default function Dashboard() {
           return res.json()
         })
         .then(data => setMetrics(data))
+        .catch(console.error)
+
+      const HISTORY_URL = `http://${window.location.hostname}:8080/api/v1/metrics/history`
+      fetch(HISTORY_URL, {
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
+      })
+        .then(res => res.json())
+        .then(data => setHistory(data))
         .catch(console.error)
     }
     
@@ -106,12 +118,14 @@ export default function Dashboard() {
           <CardContent className="pl-2">
             <div className="h-[300px] w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={data}>
+                <LineChart data={history}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="name" className="text-xs" />
-                  <YAxis className="text-xs" />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="traffic" stroke="#8884d8" strokeWidth={2} />
+                  <XAxis dataKey="Timestamp" tickFormatter={(tick) => new Date(tick).toLocaleTimeString()} className="text-xs" />
+                  <YAxis yAxisId="left" className="text-xs" />
+                  <YAxis yAxisId="right" orientation="right" className="text-xs" />
+                  <Tooltip labelFormatter={(label: any) => new Date(label).toLocaleTimeString()} />
+                  <Line yAxisId="left" type="monotone" dataKey="RPS" stroke="#8884d8" strokeWidth={2} name="RPS" dot={false} />
+                  <Line yAxisId="right" type="monotone" dataKey="AvgLatencyMs" stroke="#82ca9d" strokeWidth={2} name="Latency (ms)" dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -30,8 +31,25 @@ type LBMetrics struct {
 	lastSnapshot  time.Time
 }
 
+type BackendMetrics struct {
+	TotalRequests uint64
+	TotalErrors   uint64
+	TotalLatency  uint64 // In milliseconds
+
+	mu           sync.RWMutex
+	lastRequests uint64
+	lastErrors   uint64
+	lastLatency  uint64
+	lastSnapshot time.Time
+
+	currentRPS     float64
+	currentAvgLat  float64
+	currentErrRate float64
+}
+
 type MetricsRegistry struct {
-	lbs sync.Map // map[uint]*LBMetrics
+	lbs      sync.Map // map[uint]*LBMetrics
+	backends sync.Map // map[uint]*BackendMetrics
 }
 
 var (
@@ -73,6 +91,16 @@ func (m *MetricsRegistry) getOrCreate(lbID uint) *LBMetrics {
 	return actual.(*LBMetrics)
 }
 
+func (m *MetricsRegistry) getOrCreateBackend(backendID uint) *BackendMetrics {
+	val, ok := m.backends.Load(backendID)
+	if ok {
+		return val.(*BackendMetrics)
+	}
+	newMetrics := &BackendMetrics{}
+	actual, _ := m.backends.LoadOrStore(backendID, newMetrics)
+	return actual.(*BackendMetrics)
+}
+
 func (m *MetricsRegistry) RecordRequest(lbID uint, latency time.Duration, isError bool) {
 	lbMetrics := m.getOrCreate(lbID)
 	atomic.AddUint64(&lbMetrics.TotalRequests, 1)
@@ -85,6 +113,16 @@ func (m *MetricsRegistry) RecordRequest(lbID uint, latency time.Duration, isErro
 	if isError {
 		atomic.AddUint64(&lbMetrics.TotalErrors, 1)
 		promTotalErrors.WithLabelValues(idStr).Inc()
+	}
+}
+
+func (m *MetricsRegistry) RecordBackendRequest(backendID uint, latency time.Duration, isError bool) {
+	bm := m.getOrCreateBackend(backendID)
+	atomic.AddUint64(&bm.TotalRequests, 1)
+	atomic.AddUint64(&bm.TotalLatency, uint64(latency.Milliseconds()))
+	
+	if isError {
+		atomic.AddUint64(&bm.TotalErrors, 1)
 	}
 }
 
@@ -146,6 +184,78 @@ func (m *MetricsRegistry) GetMetricsHistoryForLB(lbID uint) []MetricsSnapshot {
 	return historyCopy
 }
 
+func (m *MetricsRegistry) GetGlobalMetricsHistory() []MetricsSnapshot {
+	type aggData struct {
+		Timestamp string
+		TotalRPS  float64
+		TotalLat  float64
+		TotalErr  float64
+		Count     int
+	}
+
+	aggMap := make(map[string]*aggData)
+
+	m.lbs.Range(func(key, value interface{}) bool {
+		lbm := value.(*LBMetrics)
+		lbm.mu.RLock()
+		for _, snap := range lbm.History {
+			if _, exists := aggMap[snap.Timestamp]; !exists {
+				aggMap[snap.Timestamp] = &aggData{Timestamp: snap.Timestamp}
+			}
+			a := aggMap[snap.Timestamp]
+			a.TotalRPS += snap.RPS
+			a.TotalLat += snap.AvgLatencyMs
+			a.TotalErr += snap.ErrorRate
+			a.Count++
+		}
+		lbm.mu.RUnlock()
+		return true
+	})
+
+	result := make([]MetricsSnapshot, 0, len(aggMap))
+	for _, a := range aggMap {
+		avgLat := 0.0
+		errRate := 0.0
+		if a.Count > 0 {
+			avgLat = a.TotalLat / float64(a.Count)
+			errRate = a.TotalErr / float64(a.Count)
+		}
+		result = append(result, MetricsSnapshot{
+			Timestamp:    a.Timestamp,
+			RPS:          a.TotalRPS,
+			AvgLatencyMs: avgLat,
+			ErrorRate:    errRate,
+		})
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		ti, _ := time.Parse("15:04:05", result[i].Timestamp)
+		tj, _ := time.Parse("15:04:05", result[j].Timestamp)
+		diff := ti.Sub(tj)
+		if diff < -12*time.Hour {
+			return false
+		} else if diff > 12*time.Hour {
+			return true
+		}
+		return ti.Before(tj)
+	})
+
+	return result
+}
+
+func (m *MetricsRegistry) GetBackendMetrics(backendID uint) map[string]interface{} {
+	bm := m.getOrCreateBackend(backendID)
+	bm.mu.RLock()
+	defer bm.mu.RUnlock()
+	
+	return map[string]interface{}{
+		"rps":            bm.currentRPS,
+		"avg_latency_ms": bm.currentAvgLat,
+		"error_rate":     bm.currentErrRate,
+		"total_requests": atomic.LoadUint64(&bm.TotalRequests),
+	}
+}
+
 func (m *MetricsRegistry) StartSnapshotLoop() {
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
@@ -199,6 +309,47 @@ func (m *MetricsRegistry) StartSnapshotLoop() {
 				lbm.lastSnapshot = now
 
 				lbm.mu.Unlock()
+				return true
+			})
+
+			m.backends.Range(func(key, value interface{}) bool {
+				bm := value.(*BackendMetrics)
+
+				req := atomic.LoadUint64(&bm.TotalRequests)
+				errs := atomic.LoadUint64(&bm.TotalErrors)
+				lat := atomic.LoadUint64(&bm.TotalLatency)
+
+				bm.mu.Lock()
+
+				var rps float64 = 0
+				var avgLat float64 = 0
+				var errRate float64 = 0
+
+				deltaReq := req - bm.lastRequests
+				deltaErr := errs - bm.lastErrors
+				deltaLat := lat - bm.lastLatency
+
+				timeDelta := now.Sub(bm.lastSnapshot).Seconds()
+				if bm.lastSnapshot.IsZero() {
+					timeDelta = 5.0
+				}
+
+				if timeDelta > 0 && deltaReq > 0 {
+					rps = float64(deltaReq) / timeDelta
+					avgLat = float64(deltaLat) / float64(deltaReq)
+					errRate = float64(deltaErr) / float64(deltaReq) * 100.0
+				}
+
+				bm.currentRPS = rps
+				bm.currentAvgLat = avgLat
+				bm.currentErrRate = errRate
+
+				bm.lastRequests = req
+				bm.lastErrors = errs
+				bm.lastLatency = lat
+				bm.lastSnapshot = now
+
+				bm.mu.Unlock()
 				return true
 			})
 		}

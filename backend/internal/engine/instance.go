@@ -92,6 +92,10 @@ func (l *LoadBalancerInstance) Start() error {
 		return l.startTCP(ctx)
 	} else if l.Config.Protocol == "udp" {
 		return l.startUDP(ctx)
+	} else if l.Config.Protocol == "https" && !l.Config.SSLEnabled {
+		// TLS Passthrough mode: user selected HTTPS but disabled SSL termination on the LB
+		Logger.InfoLB(l.Config.Name, fmt.Sprintf("Running %s in TLS Passthrough (TCP) mode", l.Config.Name))
+		return l.startTCP(ctx)
 	}
 	return l.startHTTP(ctx)
 }
@@ -175,8 +179,10 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 	}
 
 	targetAddr := fmt.Sprintf("%s:%d", target.Address, target.Port)
+	start := time.Now()
 	backendConn, err := net.DialTimeout("tcp", targetAddr, 5*time.Second)
 	if err != nil {
+		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
 		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
 		clientConn.Close()
 		return
@@ -213,14 +219,22 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 		}
 	}
 
+	var wg sync.WaitGroup
+	wg.Add(2)
+
 	go func() {
+		defer wg.Done()
 		io.Copy(backendConn, clientConn)
 		backendConn.Close()
 	}()
 	go func() {
+		defer wg.Done()
 		io.Copy(clientConn, backendConn)
 		clientConn.Close()
 	}()
+
+	wg.Wait()
+	Metrics.RecordBackendRequest(target.ID, time.Since(start), false)
 }
 
 func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
@@ -308,8 +322,10 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	}
 
 	targetAddr := fmt.Sprintf("%s:%d", target.Address, target.Port)
+	start := time.Now()
 	backendConn, err := net.Dial("udp", targetAddr)
 	if err != nil {
+		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
 		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
 		return
 	}
@@ -323,10 +339,13 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	// Write the initial packet
 	_, err = backendConn.Write(data)
 	if err != nil {
+		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
 		backendConn.Close()
 		l.udpSessions.Delete(clientKey)
 		return
 	}
+	
+	Metrics.RecordBackendRequest(target.ID, time.Since(start), false)
 
 	// Goroutine to read from backend and write back to client
 	go func() {
@@ -698,6 +717,7 @@ func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	Metrics.RecordRequest(t.lbID, latency, isError)
 
 	if target, ok := req.Context().Value("selected_backend").(*models.BackendServer); ok {
+		Metrics.RecordBackendRequest(target.ID, latency, isError)
 		if lc, ok := t.strategy.(*LeastConnections); ok {
 			lc.CompleteConnection(target)
 		}

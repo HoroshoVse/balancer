@@ -81,6 +81,7 @@ type BackendServer struct {
 	
 	// State (Not persisted in DB, but tracked by HealthChecker)
 	Status    string         `gorm:"-" json:"status"` // UP, DOWN, DISABLED, DRAIN
+	Metrics   map[string]interface{} `gorm:"-" json:"metrics,omitempty"`
 }
 
 type User struct {
