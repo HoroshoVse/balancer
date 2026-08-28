@@ -132,7 +132,10 @@ export default function LoadBalancerDetail() {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="timestamp" tickFormatter={(tick) => { const d = new Date(Number(tick)); return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(); }} />
                 <YAxis />
-                <Tooltip labelFormatter={(label: any) => { const d = new Date(Number(label)); return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(); }} />
+                <Tooltip 
+                  labelFormatter={(label: any) => { const d = new Date(Number(label)); return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(); }} 
+                  formatter={(value: number, name: string) => [Math.round(value), name]} 
+                />
                 <Line type="monotone" dataKey="rps" stroke="#8884d8" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
@@ -149,7 +152,10 @@ export default function LoadBalancerDetail() {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="timestamp" tickFormatter={(tick) => { const d = new Date(Number(tick)); return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(); }} />
                 <YAxis />
-                <Tooltip labelFormatter={(label: any) => { const d = new Date(Number(label)); return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(); }} />
+                <Tooltip 
+                  labelFormatter={(label: any) => { const d = new Date(Number(label)); return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(); }} 
+                  formatter={(value: number, name: string) => [Math.round(value), name]} 
+                />
                 <Line type="monotone" dataKey="avg_latency_ms" stroke="#82ca9d" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
