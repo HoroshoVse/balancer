@@ -25,7 +25,7 @@ func (r *RoundRobin) Next(backends []*models.BackendServer, clientIP string) *mo
 }
 
 type LeastConnections struct {
-	connections sync.Map // map[*models.BackendServer]*int64
+	connections sync.Map // map[uint]*int64  — keyed by backend ID
 }
 
 func (l *LeastConnections) Next(backends []*models.BackendServer, clientIP string) *models.BackendServer {
@@ -37,7 +37,7 @@ func (l *LeastConnections) Next(backends []*models.BackendServer, clientIP strin
 	var minConns int64 = -1
 
 	for _, b := range backends {
-		val, _ := l.connections.LoadOrStore(b, new(int64))
+		val, _ := l.connections.LoadOrStore(b.ID, new(int64))
 		conns := atomic.LoadInt64(val.(*int64))
 
 		if minConns == -1 || conns < minConns {
@@ -47,7 +47,7 @@ func (l *LeastConnections) Next(backends []*models.BackendServer, clientIP strin
 	}
 
 	if bestBackend != nil {
-		val, _ := l.connections.Load(bestBackend)
+		val, _ := l.connections.Load(bestBackend.ID)
 		atomic.AddInt64(val.(*int64), 1)
 	}
 
@@ -57,10 +57,11 @@ func (l *LeastConnections) Next(backends []*models.BackendServer, clientIP strin
 // CompleteConnection should be called when a connection to a backend is closed.
 // This is specific to strategies that track connection state.
 func (l *LeastConnections) CompleteConnection(backend *models.BackendServer) {
-	if val, ok := l.connections.Load(backend); ok {
+	if val, ok := l.connections.Load(backend.ID); ok {
 		atomic.AddInt64(val.(*int64), -1)
 	}
 }
+
 
 // WeightedRoundRobin Strategy
 type WeightedRoundRobin struct {
