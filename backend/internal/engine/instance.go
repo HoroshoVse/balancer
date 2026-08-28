@@ -217,12 +217,14 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 	targetAddr := fmt.Sprintf("%s:%d", target.Address, target.Port)
 	start := time.Now()
 	backendConn, err := net.DialTimeout("tcp", targetAddr, 5*time.Second)
+	dialLatency := time.Since(start)
 	if err != nil {
-		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
+		Metrics.RecordBackendRequest(target.ID, dialLatency, true)
 		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
 		clientConn.Close()
 		return
 	}
+	Metrics.RecordBackendRequest(target.ID, dialLatency, false)
 
 	if l.Config.ProxyProtocolEnabled {
 		clientIP, clientPort, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
@@ -270,7 +272,6 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 	}()
 
 	wg.Wait()
-	Metrics.RecordBackendRequest(target.ID, time.Since(start), false)
 }
 
 func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
