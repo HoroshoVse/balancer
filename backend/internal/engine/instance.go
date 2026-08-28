@@ -400,6 +400,24 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 				clientIP = req.RemoteAddr
 			}
 			target := l.strategy.Next(backends, clientIP)
+
+			// Sticky Sessions Support
+			if l.Config.StickySessionsEnabled {
+				cookieName := "BALANCER_SESSION"
+				if l.Config.StickySessionType != "" {
+					cookieName = l.Config.StickySessionType
+				}
+				if cookie, err := req.Cookie(cookieName); err == nil && cookie.Value != "" {
+					// Check if this backend is still active and healthy
+					for _, b := range backends {
+						if fmt.Sprintf("%d", b.ID) == cookie.Value {
+							target = b // Override the strategy
+							break
+						}
+					}
+				}
+			}
+
 			if target == nil {
 				return
 			}
@@ -443,6 +461,32 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Proxy error to %s: %v", r.URL.String(), err))
 			w.WriteHeader(http.StatusBadGateway)
 			w.Write([]byte("502 Bad Gateway - Backend node is unreachable or dropped the connection"))
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			if l.Config.StickySessionsEnabled {
+				if target, ok := resp.Request.Context().Value("selected_backend").(*models.BackendServer); ok {
+					cookieName := "BALANCER_SESSION"
+					if l.Config.StickySessionType != "" {
+						cookieName = l.Config.StickySessionType
+					}
+					cookieVal := fmt.Sprintf("%d", target.ID)
+					reqCookie, err := resp.Request.Cookie(cookieName)
+					// Set cookie if it wasn't present or if we routed to a different node
+					if err != nil || reqCookie.Value != cookieVal {
+						c := &http.Cookie{
+							Name:     cookieName,
+							Value:    cookieVal,
+							Path:     "/",
+							HttpOnly: true,
+							MaxAge:   86400, // 24 hours
+						}
+						if v := c.String(); v != "" {
+							resp.Header.Add("Set-Cookie", v)
+						}
+					}
+				}
+			}
+			return nil
 		},
 	}
 
