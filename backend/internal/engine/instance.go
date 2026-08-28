@@ -380,7 +380,10 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			}
 			
 			req.URL.Scheme = scheme
-			req.URL.Host = fmt.Sprintf("%s:%d", target.Address, target.Port)
+			req.URL.Host = req.Host
+			if req.URL.Host == "" {
+				req.URL.Host = fmt.Sprintf("%s:%d", target.Address, target.Port)
+			}
 			req.URL.Path = req.URL.Path
 			// Preserve the original req.Host so the backend knows what domain was requested
 
@@ -607,10 +610,19 @@ func (t *backendTransport) getTransport() *http.Transport {
 			tr.ForceAttemptHTTP2 = false
 		}
 
-		if t.proxyProtocolEnabled {
-			baseDial := tr.DialContext
-			tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-				conn, err := baseDial(ctx, network, addr)
+		baseDial := tr.DialContext
+		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// Override addr with the actual backend IP, ignoring req.URL.Host (which is used for SNI)
+			target, ok := ctx.Value("selected_backend").(*models.BackendServer)
+			if ok && target != nil {
+				addr = fmt.Sprintf("%s:%d", target.Address, target.Port)
+			}
+			conn, err := baseDial(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			
+			if t.proxyProtocolEnabled {
 				if err != nil {
 					return nil, err
 				}
@@ -643,9 +655,9 @@ func (t *backendTransport) getTransport() *http.Transport {
 					conn.Close()
 					return nil, err
 				}
-
-				return conn, nil
 			}
+
+			return conn, nil
 		}
 
 		t.inner = tr
