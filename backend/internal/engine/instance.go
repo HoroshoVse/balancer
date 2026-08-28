@@ -20,7 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/net/http2"
+
 
 	"github.com/balancer/backend/internal/models"
 	"github.com/caddyserver/certmagic"
@@ -414,12 +414,12 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			}
 			
 			req.URL.Scheme = scheme
-			// req.URL.Host determines the http.Transport connection pool key.
-			// It MUST be the backend's address so connections are pooled per-backend.
-			req.URL.Host = fmt.Sprintf("%s:%d", target.Address, target.Port)
-			// req.Host determines the Host header sent to the backend.
-			// We leave req.Host untouched to preserve the original client requested domain.
-			
+			// req.URL.Host must stay as the original domain for correct TLS SNI.
+			// The DialContext override in backendTransport routes to the actual backend IP.
+			req.URL.Host = req.Host
+			if req.URL.Host == "" {
+				req.URL.Host = fmt.Sprintf("%s:%d", target.Address, target.Port)
+			}
 			req.URL.Path = req.URL.Path
 
 			if err == nil {
@@ -640,13 +640,13 @@ func (t *backendTransport) getTransport() *http.Transport {
 			InsecureSkipVerify: true,
 		}
 
-		if t.http2Enabled {
-			tr.ForceAttemptHTTP2 = true
-			tr.TLSClientConfig.NextProtos = []string{"h2", "http/1.1"}
-			http2.ConfigureTransport(tr)
-		} else {
-			tr.ForceAttemptHTTP2 = false
-		}
+		// Disable keep-alive connection pooling.
+		// This ensures DialContext is called for EVERY request, which is
+		// critical for load balancing: the strategy selects a backend in
+		// DialContext, and without this, idle connections are reused,
+		// sending all requests to the same backend.
+		tr.DisableKeepAlives = true
+		tr.ForceAttemptHTTP2 = false
 
 		baseDial := tr.DialContext
 		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
