@@ -331,8 +331,8 @@ export default function LoadBalancers() {
     }
 
     try {
-      const res = await fetch(`${API_BASE()}/api/v1/load-balancers/update`, {
-        method: "POST",
+      const res = await fetch(`${API_BASE()}/api/v1/load-balancers`, {
+        method: "PUT",
         headers: authHeaders(),
         body: JSON.stringify(payload)
       })
