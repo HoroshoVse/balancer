@@ -17,7 +17,7 @@ const authHeaders = () => ({
 interface BackendNode {
   name: string
   address: string
-  port: number
+  port: number | string
   weight: number
   enabled: boolean
   backup: boolean
@@ -26,7 +26,7 @@ interface BackendNode {
   status?: string
   hc_enabled?: boolean
   hc_protocol?: string
-  hc_port?: number
+  hc_port?: number | string
   hc_path?: string
   hc_interval?: number
   hc_timeout?: number
@@ -35,10 +35,10 @@ interface BackendNode {
   sni?: string
 }
 
-const emptyBackend = (): BackendNode => ({
-  name: "Node 1",
-  address: "127.0.0.1",
-  port: 8080,
+const emptyBackend = (index: number = 1): BackendNode => ({
+  name: `Node ${index}`,
+  address: "",
+  port: "",
   weight: 1,
   enabled: true,
   backup: false,
@@ -46,7 +46,7 @@ const emptyBackend = (): BackendNode => ({
   tls_enabled: false,
   hc_enabled: true,
   hc_protocol: "http",
-  hc_port: 0,
+  hc_port: "",
   hc_path: "/",
   hc_interval: 10,
   hc_timeout: 5,
@@ -118,7 +118,7 @@ export default function LoadBalancers() {
   }
 
   // --- Backend node helpers ---
-  const addBackend = () => setBackends([...backends, emptyBackend()])
+  const addBackend = () => setBackends([...backends, emptyBackend(backends.length + 1)])
   const removeBackend = (i: number) => setBackends(backends.filter((_, idx) => idx !== i))
   const updateBackend = (i: number, field: keyof BackendNode, value: any) => {
     const updated = [...backends]
@@ -556,7 +556,7 @@ export default function LoadBalancers() {
                       </div>
                       <div className="grid gap-1">
                         <label className="text-xs text-muted-foreground">Port</label>
-                        <Input type="number" value={b.port} onChange={e => updateBackend(i, "port", parseInt(e.target.value) || 80)} />
+                        <Input type="number" value={b.port} onChange={e => updateBackend(i, "port", e.target.value ? parseInt(e.target.value) : "")} />
                       </div>
                       <div className="grid gap-1">
                         <label className="text-xs text-muted-foreground" title="Override SNI and Host header">SNI / Host</label>
@@ -782,7 +782,7 @@ export default function LoadBalancers() {
                       </div>
                       <div className="grid gap-1">
                         <label className="text-xs text-muted-foreground">Port</label>
-                        <Input type="number" value={b.port} onChange={e => updateBackend(i, "port", parseInt(e.target.value) || 80)} />
+                        <Input type="number" value={b.port} onChange={e => updateBackend(i, "port", e.target.value ? parseInt(e.target.value) : "")} />
                       </div>
                       <div className="grid gap-1">
                         <label className="text-xs text-muted-foreground" title="Override SNI and Host header">SNI / Host</label>
@@ -831,7 +831,7 @@ export default function LoadBalancers() {
                             </div>
                             <div className="grid gap-1">
                               <label className="text-xs text-muted-foreground">Port</label>
-                              <Input type="number" value={b.hc_port || 0} onChange={e => updateBackend(i, "hc_port", parseInt(e.target.value) || 0)} />
+                              <Input type="number" value={b.hc_port} onChange={e => updateBackend(i, "hc_port", e.target.value ? parseInt(e.target.value) : "")} />
                             </div>
                             <div className="grid gap-1">
                               <label className="text-xs text-muted-foreground">Path</label>
