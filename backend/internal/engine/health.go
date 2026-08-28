@@ -72,17 +72,18 @@ func (hc *HealthChecker) loop(ctx context.Context) {
 }
 
 func (hc *HealthChecker) checkAll() {
-	var backends []models.BackendServer
-	if err := hc.db.Find(&backends).Error; err != nil {
-		Logger.Error(fmt.Sprintf("HealthChecker DB error: %v", err))
+	var lbs []models.LoadBalancer
+	if err := hc.db.Preload("BackendGroup.Backends").Find(&lbs).Error; err != nil {
 		return
 	}
 
-	for _, backend := range backends {
-		if !backend.Enabled || !backend.HCEnabled {
-			continue
+	for _, lb := range lbs {
+		for _, backend := range lb.BackendGroup.Backends {
+			if !backend.Enabled || !backend.HCEnabled {
+				continue
+			}
+			go hc.checkBackend(backend)
 		}
-		go hc.checkBackend(backend)
 	}
 }
 

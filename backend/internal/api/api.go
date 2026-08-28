@@ -207,6 +207,18 @@ func (s *Server) deleteLoadBalancer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// First find the LB to get the BackendGroupID
+	var lb models.LoadBalancer
+	if err := s.db.First(&lb, id).Error; err != nil {
+		http.Error(w, "Load balancer not found", http.StatusNotFound)
+		return
+	}
+
+	// Delete backends
+	s.db.Where("group_id = ?", lb.BackendGroupID).Delete(&models.BackendServer{})
+	// Delete backend group
+	s.db.Delete(&models.BackendGroup{}, lb.BackendGroupID)
+	// Delete LB
 	if err := s.db.Delete(&models.LoadBalancer{}, id).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
