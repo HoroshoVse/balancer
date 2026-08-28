@@ -11,7 +11,8 @@ export default function LoadBalancerDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [lb, setLb] = useState<any>(null)
-
+  const [history, setHistory] = useState<any[]>([])
+  const [logs, setLogs] = useState<any[]>([])
   useEffect(() => {
     const fetchLb = async () => {
       try {
@@ -32,16 +33,46 @@ export default function LoadBalancerDetail() {
     return () => clearInterval(interval)
   }, [id])
 
-  if (!lb) return <div className="p-8 text-center text-muted-foreground">Loading...</div>
+  useEffect(() => {
+    if (!lb?.name) return
+    const fetchLogs = async () => {
+      try {
+        const res = await fetch(`${API_BASE()}/api/v1/logs?lb_name=${lb.name}`, {
+          headers: { "Authorization": `Bearer ${localStorage.getItem("token")}` }
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setLogs(data)
+        }
+      } catch (err) {
+        console.error("Failed to fetch logs", err)
+      }
+    }
+    fetchLogs()
+    const interval = setInterval(fetchLogs, 5000)
+    return () => clearInterval(interval)
+  }, [lb?.name])
 
-  // Dummy history for charts since we don't have historical data API yet
-  const chartData = [
-    { time: "10:00", rps: Math.max(0, (lb.metrics?.total_requests || 0) - 50), latency: Math.max(0, (lb.metrics?.average_latency_ms || 0) - 5) },
-    { time: "10:01", rps: Math.max(0, (lb.metrics?.total_requests || 0) - 20), latency: Math.max(0, (lb.metrics?.average_latency_ms || 0) - 2) },
-    { time: "10:02", rps: Math.max(0, (lb.metrics?.total_requests || 0) - 40), latency: Math.max(0, (lb.metrics?.average_latency_ms || 0) - 10) },
-    { time: "10:03", rps: Math.max(0, (lb.metrics?.total_requests || 0) - 10), latency: Math.max(0, (lb.metrics?.average_latency_ms || 0) + 5) },
-    { time: "10:04", rps: lb.metrics?.total_requests || 0, latency: lb.metrics?.average_latency_ms || 0 },
-  ]
+  useEffect(() => {
+    const fetchHistory = async () => {
+      try {
+        const res = await fetch(`${API_BASE()}/api/v1/load-balancers/${id}/metrics/history`, {
+          headers: { "Authorization": `Bearer ${localStorage.getItem("token")}` }
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setHistory(data)
+        }
+      } catch (err) {
+        console.error("Failed to fetch history", err)
+      }
+    }
+    fetchHistory()
+    const interval = setInterval(fetchHistory, 5000)
+    return () => clearInterval(interval)
+  }, [id])
+
+  if (!lb) return <div className="p-8 text-center text-muted-foreground">Loading...</div>
 
   return (
     <div className="space-y-6">
@@ -95,12 +126,12 @@ export default function LoadBalancerDetail() {
           </CardHeader>
           <CardContent className="h-[300px]">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
+              <LineChart data={history}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="time" />
+                <XAxis dataKey="timestamp" tickFormatter={(tick) => new Date(tick).toLocaleTimeString()} />
                 <YAxis />
-                <Tooltip />
-                <Line type="monotone" dataKey="rps" stroke="#8884d8" strokeWidth={2} />
+                <Tooltip labelFormatter={(label: any) => new Date(label).toLocaleTimeString()} />
+                <Line type="monotone" dataKey="rps" stroke="#8884d8" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </CardContent>
@@ -112,12 +143,12 @@ export default function LoadBalancerDetail() {
           </CardHeader>
           <CardContent className="h-[300px]">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
+              <LineChart data={history}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="time" />
+                <XAxis dataKey="timestamp" tickFormatter={(tick) => new Date(tick).toLocaleTimeString()} />
                 <YAxis />
-                <Tooltip />
-                <Line type="monotone" dataKey="latency" stroke="#82ca9d" strokeWidth={2} />
+                <Tooltip labelFormatter={(label: any) => new Date(label).toLocaleTimeString()} />
+                <Line type="monotone" dataKey="avg_latency_ms" stroke="#82ca9d" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </CardContent>
@@ -145,6 +176,29 @@ export default function LoadBalancerDetail() {
                 </div>
               </div>
             ))}
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Recent Logs</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="bg-black text-green-400 p-4 rounded-md font-mono text-sm h-64 overflow-y-auto">
+            {logs.length === 0 ? (
+              <div className="text-gray-500">No logs found...</div>
+            ) : (
+              logs.map((log: any, i: number) => (
+                <div key={i} className="mb-1">
+                  <span className="text-gray-500">[{new Date(log.timestamp).toLocaleString()}]</span>{" "}
+                  <span className={log.level === 'ERROR' ? 'text-red-500' : log.level === 'WARN' ? 'text-yellow-500' : 'text-blue-400'}>
+                    [{log.level}]
+                  </span>{" "}
+                  <span className="text-gray-300">[{log.lb_name}]</span>{" "}
+                  {log.message}
+                </div>
+              ))
+            )}
           </div>
         </CardContent>
       </Card>

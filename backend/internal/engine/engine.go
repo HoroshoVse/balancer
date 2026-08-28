@@ -36,6 +36,7 @@ func (e *Engine) Start() error {
 			inst.updateBackends()
 		}
 	})
+	Metrics.StartSnapshotLoop()
 	return e.ReloadConfig()
 }
 

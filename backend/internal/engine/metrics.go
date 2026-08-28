@@ -10,10 +10,24 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+type MetricsSnapshot struct {
+	Timestamp      string  `json:"timestamp"`
+	RPS            float64 `json:"rps"`
+	AvgLatencyMs   float64 `json:"avg_latency_ms"`
+	ErrorRate      float64 `json:"error_rate"`
+}
+
 type LBMetrics struct {
 	TotalRequests uint64
 	TotalErrors   uint64
 	TotalLatency  uint64 // In milliseconds
+
+	mu            sync.RWMutex
+	History       []MetricsSnapshot
+	lastRequests  uint64
+	lastErrors    uint64
+	lastLatency   uint64
+	lastSnapshot  time.Time
 }
 
 type MetricsRegistry struct {
@@ -121,4 +135,72 @@ func (m *MetricsRegistry) GetMetricsForLB(lbID uint) map[string]interface{} {
 		"average_latency_ms": avg,
 		"error_rate_percent": errRate,
 	}
+}
+
+func (m *MetricsRegistry) GetMetricsHistoryForLB(lbID uint) []MetricsSnapshot {
+	lbm := m.getOrCreate(lbID)
+	lbm.mu.RLock()
+	defer lbm.mu.RUnlock()
+	historyCopy := make([]MetricsSnapshot, len(lbm.History))
+	copy(historyCopy, lbm.History)
+	return historyCopy
+}
+
+func (m *MetricsRegistry) StartSnapshotLoop() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			now := time.Now()
+			m.lbs.Range(func(key, value interface{}) bool {
+				lbm := value.(*LBMetrics)
+				
+				req := atomic.LoadUint64(&lbm.TotalRequests)
+				errs := atomic.LoadUint64(&lbm.TotalErrors)
+				lat := atomic.LoadUint64(&lbm.TotalLatency)
+
+				lbm.mu.Lock()
+				
+				var rps float64 = 0
+				var avgLat float64 = 0
+				var errRate float64 = 0
+
+				deltaReq := req - lbm.lastRequests
+				deltaErr := errs - lbm.lastErrors
+				deltaLat := lat - lbm.lastLatency
+				
+				timeDelta := now.Sub(lbm.lastSnapshot).Seconds()
+				if lbm.lastSnapshot.IsZero() {
+					timeDelta = 5.0
+				}
+				
+				if timeDelta > 0 && deltaReq > 0 {
+					rps = float64(deltaReq) / timeDelta
+					avgLat = float64(deltaLat) / float64(deltaReq)
+					errRate = float64(deltaErr) / float64(deltaReq) * 100.0
+				}
+
+				snap := MetricsSnapshot{
+					Timestamp:    now.Format("15:04:05"),
+					RPS:          rps,
+					AvgLatencyMs: avgLat,
+					ErrorRate:    errRate,
+				}
+
+				lbm.History = append(lbm.History, snap)
+				if len(lbm.History) > 60 {
+					lbm.History = lbm.History[len(lbm.History)-60:] // keep last 60
+				}
+
+				lbm.lastRequests = req
+				lbm.lastErrors = errs
+				lbm.lastLatency = lat
+				lbm.lastSnapshot = now
+
+				lbm.mu.Unlock()
+				return true
+			})
+		}
+	}()
 }

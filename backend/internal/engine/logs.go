@@ -17,6 +17,7 @@ type LogEntry struct {
 	Timestamp time.Time `json:"timestamp"`
 	Level     LogLevel  `json:"level"`
 	Message   string    `json:"message"`
+	LBName    string    `json:"lb_name,omitempty"`
 }
 
 type LogBuffer struct {
@@ -34,7 +35,7 @@ func NewLogBuffer(capacity int) *LogBuffer {
 	}
 }
 
-func (b *LogBuffer) addLog(level LogLevel, message string) {
+func (b *LogBuffer) addLog(level LogLevel, message string, lbName string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -42,6 +43,7 @@ func (b *LogBuffer) addLog(level LogLevel, message string) {
 		Timestamp: time.Now(),
 		Level:     level,
 		Message:   message,
+		LBName:    lbName,
 	}
 	b.head = (b.head + 1) % b.capacity
 	if b.count < b.capacity {
@@ -50,15 +52,27 @@ func (b *LogBuffer) addLog(level LogLevel, message string) {
 }
 
 func (b *LogBuffer) Info(message string) {
-	b.addLog(LevelInfo, message)
+	b.addLog(LevelInfo, message, "")
 }
 
 func (b *LogBuffer) Warn(message string) {
-	b.addLog(LevelWarn, message)
+	b.addLog(LevelWarn, message, "")
 }
 
 func (b *LogBuffer) Error(message string) {
-	b.addLog(LevelError, message)
+	b.addLog(LevelError, message, "")
+}
+
+func (b *LogBuffer) InfoLB(lbName, message string) {
+	b.addLog(LevelInfo, message, lbName)
+}
+
+func (b *LogBuffer) WarnLB(lbName, message string) {
+	b.addLog(LevelWarn, message, lbName)
+}
+
+func (b *LogBuffer) ErrorLB(lbName, message string) {
+	b.addLog(LevelError, message, lbName)
 }
 
 func (b *LogBuffer) GetLogs() []LogEntry {

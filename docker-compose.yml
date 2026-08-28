@@ -2,7 +2,7 @@ services:
   backend:
     image: ghcr.io/horoshovse/balancer-backend:latest
     ports:
-      - "80:80"
+      - "8081:80"
       - "443:443"
       - "443:443/udp" # for QUIC/HTTP3
       - "8080:8080" # API & UI port

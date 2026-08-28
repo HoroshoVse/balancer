@@ -8,6 +8,7 @@ interface LogEntry {
   level: string
   message: string
   timestamp: string
+  lb_name?: string
 }
 
 export default function Logs() {
@@ -90,6 +91,9 @@ export default function Logs() {
                   <span className={`w-12 font-bold ${getLogColor(log.level)}`}>
                     {log.level.padEnd(5)}
                   </span>
+                  {log.lb_name && (
+                    <span className="text-blue-300 font-bold">[{log.lb_name}]</span>
+                  )}
                   <span className="text-zinc-300 break-all">{log.message}</span>
                 </div>
               ))}

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/balancer/backend/internal/engine"
 	"github.com/balancer/backend/internal/models"
@@ -36,6 +37,7 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/v1/metrics/overview", s.corsMiddleware(AuthMiddleware(s.getMetricsOverview)))
 	mux.HandleFunc("/api/v1/settings", s.corsMiddleware(AuthMiddleware(s.getSettings)))
 	mux.HandleFunc("/api/v1/settings/update", s.corsMiddleware(AuthMiddleware(s.updateSettings)))
+	mux.HandleFunc("/api/v1/load-balancers/history", s.corsMiddleware(AuthMiddleware(s.getLBMetricsHistory))) // Expected query param ?id=X
 	mux.HandleFunc("/api/v1/logs", s.corsMiddleware(AuthMiddleware(s.getLogs)))
 	mux.HandleFunc("/api/v1/tools/test-connection", s.corsMiddleware(AuthMiddleware(s.testConnection)))
 
@@ -268,7 +270,43 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(engine.Logger.GetLogs()); err != nil {
+	lbName := r.URL.Query().Get("lb_name")
+	
+	allLogs := engine.Logger.GetLogs()
+	if lbName == "" {
+		if err := json.NewEncoder(w).Encode(allLogs); err != nil {
+			http.Error(w, "Failed to encode logs", http.StatusInternalServerError)
+		}
+		return
+	}
+	
+	filtered := make([]engine.LogEntry, 0)
+	for _, l := range allLogs {
+		if l.LBName == lbName {
+			filtered = append(filtered, l)
+		}
+	}
+	
+	if err := json.NewEncoder(w).Encode(filtered); err != nil {
 		http.Error(w, "Failed to encode logs", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) getLBMetricsHistory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "Missing id", http.StatusBadRequest)
+		return
+	}
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+	
+	history := engine.Metrics.GetMetricsHistoryForLB(uint(id))
+	if err := json.NewEncoder(w).Encode(history); err != nil {
+		http.Error(w, "Failed to encode metrics history", http.StatusInternalServerError)
 	}
 }

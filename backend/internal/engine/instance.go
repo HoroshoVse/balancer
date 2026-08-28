@@ -123,11 +123,11 @@ func (l *LoadBalancerInstance) updateBackends() {
 	if len(primaryBackends) > 0 {
 		activeBackends = primaryBackends
 	} else if len(backupBackends) > 0 {
-		Logger.Warn(fmt.Sprintf("[FAILOVER] %s: all primary backends DOWN, switching to backup nodes", l.Config.Name))
+		Logger.WarnLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: all primary backends DOWN, switching to backup nodes", l.Config.Name))
 		activeBackends = backupBackends
 	}
 	if len(activeBackends) == 0 {
-		Logger.Error(fmt.Sprintf("[CRITICAL] %s: ALL backends (primary + backup) are DOWN", l.Config.Name))
+		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("[CRITICAL] %s: ALL backends (primary + backup) are DOWN", l.Config.Name))
 		l.backends.Store([]*models.BackendServer{})
 	} else {
 		l.backends.Store(activeBackends)
@@ -142,7 +142,7 @@ func (l *LoadBalancerInstance) startTCP(ctx context.Context) error {
 	}
 	l.tcpListener = listener
 
-	Logger.Info(fmt.Sprintf("TCP LoadBalancer %s listening on %s", l.Config.Name, addr))
+	Logger.InfoLB(l.Config.Name, fmt.Sprintf("TCP LoadBalancer %s listening on %s", l.Config.Name, addr))
 
 	go func() {
 		<-ctx.Done()
@@ -156,7 +156,7 @@ func (l *LoadBalancerInstance) startTCP(ctx context.Context) error {
 			case <-ctx.Done():
 				return nil // Graceful shutdown
 			default:
-				Logger.Error(fmt.Sprintf("Accept error on %s: %v", l.Config.Name, err))
+				Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Accept error on %s: %v", l.Config.Name, err))
 				continue
 			}
 		}
@@ -177,7 +177,7 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 	targetAddr := fmt.Sprintf("%s:%d", target.Address, target.Port)
 	backendConn, err := net.DialTimeout("tcp", targetAddr, 5*time.Second)
 	if err != nil {
-		Logger.Error(fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
+		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
 		clientConn.Close()
 		return
 	}
@@ -235,7 +235,7 @@ func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
 		return err
 	}
 
-	Logger.Info(fmt.Sprintf("UDP LoadBalancer %s listening on %s", l.Config.Name, addr))
+	Logger.InfoLB(l.Config.Name, fmt.Sprintf("UDP LoadBalancer %s listening on %s", l.Config.Name, addr))
 
 	go func() {
 		cleanupTicker := time.NewTicker(10 * time.Second)
@@ -272,7 +272,7 @@ func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
 			case <-ctx.Done():
 				return nil // Graceful shutdown
 			default:
-				Logger.Error(fmt.Sprintf("ReadFromUDP error on %s: %v", l.Config.Name, err))
+				Logger.ErrorLB(l.Config.Name, fmt.Sprintf("ReadFromUDP error on %s: %v", l.Config.Name, err))
 				continue
 			}
 		}
@@ -310,7 +310,7 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	targetAddr := fmt.Sprintf("%s:%d", target.Address, target.Port)
 	backendConn, err := net.Dial("udp", targetAddr)
 	if err != nil {
-		Logger.Error(fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
+		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
 		return
 	}
 
@@ -399,7 +399,7 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			http2Enabled:         l.Config.Protocol == "https" || l.Config.BackendHTTP2Enabled,
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			Logger.Error(fmt.Sprintf("Proxy error to %s: %v", r.URL.String(), err))
+			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Proxy error to %s: %v", r.URL.String(), err))
 			w.WriteHeader(http.StatusBadGateway)
 			w.Write([]byte("502 Bad Gateway - Backend node is unreachable or dropped the connection"))
 		},
@@ -437,7 +437,7 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 						if err != nil {
 							l.acmeStatus.Store("error")
 							l.acmeError.Store(err.Error())
-							Logger.Error(fmt.Sprintf("Failed to manage ACME domains for %s: %v", l.Config.Name, err))
+							Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to manage ACME domains for %s: %v", l.Config.Name, err))
 						} else {
 							l.acmeStatus.Store("ok")
 							l.acmeError.Store("")
@@ -452,14 +452,14 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			if err == nil {
 				tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 			} else {
-				Logger.Error(fmt.Sprintf("Failed to load TLS cert from data for %s: %v", l.Config.Name, err))
+				Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to load TLS cert from data for %s: %v", l.Config.Name, err))
 			}
 		} else if l.Config.CertPath != "" && l.Config.KeyPath != "" {
 			cert, err := tls.LoadX509KeyPair(l.Config.CertPath, l.Config.KeyPath)
 			if err == nil {
 				tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
 			} else {
-				Logger.Error(fmt.Sprintf("Failed to load TLS cert from path for %s: %v", l.Config.Name, err))
+				Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to load TLS cert from path for %s: %v", l.Config.Name, err))
 			}
 		} else {
 			// Local dev fallback
@@ -477,7 +477,7 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 		}
 
 		go func() {
-			Logger.Info(fmt.Sprintf("HTTPS LoadBalancer %s listening on %s", l.Config.Name, addr))
+			Logger.InfoLB(l.Config.Name, fmt.Sprintf("HTTPS LoadBalancer %s listening on %s", l.Config.Name, addr))
 			errChan <- l.httpsServer.ListenAndServeTLS("", "")
 		}()
 		
@@ -488,7 +488,7 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 				TLSConfig: tlsConfig,
 			}
 			go func() {
-				Logger.Info(fmt.Sprintf("HTTP/3 (QUIC) LoadBalancer %s listening on %s", l.Config.Name, addr))
+				Logger.InfoLB(l.Config.Name, fmt.Sprintf("HTTP/3 (QUIC) LoadBalancer %s listening on %s", l.Config.Name, addr))
 				errChan <- l.http3Server.ListenAndServe()
 			}()
 		}
@@ -498,7 +498,7 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			Handler: handler,
 		}
 		go func() {
-			Logger.Info(fmt.Sprintf("HTTP LoadBalancer %s listening on %s", l.Config.Name, addr))
+			Logger.InfoLB(l.Config.Name, fmt.Sprintf("HTTP LoadBalancer %s listening on %s", l.Config.Name, addr))
 			errChan <- l.httpServer.ListenAndServe()
 		}()
 	}
