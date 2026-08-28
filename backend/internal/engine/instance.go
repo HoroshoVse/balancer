@@ -399,12 +399,13 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			}
 			
 			req.URL.Scheme = scheme
-			req.URL.Host = req.Host
-			if req.URL.Host == "" {
-				req.URL.Host = fmt.Sprintf("%s:%d", target.Address, target.Port)
-			}
+			// req.URL.Host determines the http.Transport connection pool key.
+			// It MUST be the backend's address so connections are pooled per-backend.
+			req.URL.Host = fmt.Sprintf("%s:%d", target.Address, target.Port)
+			// req.Host determines the Host header sent to the backend.
+			// We leave req.Host untouched to preserve the original client requested domain.
+			
 			req.URL.Path = req.URL.Path
-			// Preserve the original req.Host so the backend knows what domain was requested
 
 			if err == nil {
 				req.Header.Set("X-Real-IP", clientIP)

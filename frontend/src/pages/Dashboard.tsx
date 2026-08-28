@@ -3,15 +3,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Activity, Server, ArrowUpRight, ArrowDownRight } from "lucide-react"
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 
-const data = [
-  { name: '10:00', traffic: 4000, errors: 24 },
-  { name: '10:05', traffic: 3000, errors: 13 },
-  { name: '10:10', traffic: 2000, errors: 98 },
-  { name: '10:15', traffic: 2780, errors: 39 },
-  { name: '10:20', traffic: 1890, errors: 48 },
-  { name: '10:25', traffic: 2390, errors: 38 },
-  { name: '10:30', traffic: 3490, errors: 43 },
-];
 
 export default function Dashboard() {
   const [metrics, setMetrics] = useState({
