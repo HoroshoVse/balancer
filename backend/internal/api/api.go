@@ -147,6 +147,10 @@ func (s *Server) handleLoadBalancers(w http.ResponseWriter, r *http.Request) {
 		s.createLoadBalancer(w, r)
 		return
 	}
+	if r.Method == "PUT" {
+		s.updateLoadBalancer(w, r)
+		return
+	}
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
