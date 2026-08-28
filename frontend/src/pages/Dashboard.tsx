@@ -111,12 +111,12 @@ export default function Dashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={history}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="Timestamp" tickFormatter={(tick) => new Date(tick).toLocaleTimeString()} className="text-xs" />
+                  <XAxis dataKey="timestamp" tickFormatter={(tick) => new Date(tick).toLocaleTimeString()} className="text-xs" />
                   <YAxis yAxisId="left" className="text-xs" />
                   <YAxis yAxisId="right" orientation="right" className="text-xs" />
                   <Tooltip labelFormatter={(label: any) => new Date(label).toLocaleTimeString()} />
-                  <Line yAxisId="left" type="monotone" dataKey="RPS" stroke="#8884d8" strokeWidth={2} name="RPS" dot={false} />
-                  <Line yAxisId="right" type="monotone" dataKey="AvgLatencyMs" stroke="#82ca9d" strokeWidth={2} name="Latency (ms)" dot={false} />
+                  <Line yAxisId="left" type="monotone" dataKey="rps" stroke="#8884d8" strokeWidth={2} name="RPS" dot={false} />
+                  <Line yAxisId="right" type="monotone" dataKey="avg_latency_ms" stroke="#82ca9d" strokeWidth={2} name="Latency (ms)" dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>

@@ -92,7 +92,7 @@ export default function LoadBalancerDetail() {
             <CardTitle className="text-sm font-medium">Requests per Second</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{latestHistory?.RPS || 0}</div>
+            <div className="text-2xl font-bold">{latestHistory?.rps || 0}</div>
           </CardContent>
         </Card>
         <Card>
@@ -100,7 +100,7 @@ export default function LoadBalancerDetail() {
             <CardTitle className="text-sm font-medium">Avg Latency</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{latestHistory?.AvgLatencyMs || 0} ms</div>
+            <div className="text-2xl font-bold">{latestHistory?.avg_latency_ms || 0} ms</div>
           </CardContent>
         </Card>
         <Card>
@@ -108,7 +108,7 @@ export default function LoadBalancerDetail() {
             <CardTitle className="text-sm font-medium">Error Rate</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-red-500">{latestHistory?.ErrorRate?.toFixed(2) || 0}%</div>
+            <div className="text-2xl font-bold text-red-500">{latestHistory?.error_rate?.toFixed(2) || 0}%</div>
           </CardContent>
         </Card>
         <Card>
@@ -130,10 +130,10 @@ export default function LoadBalancerDetail() {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={history}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="Timestamp" tickFormatter={(tick) => new Date(tick).toLocaleTimeString()} />
+                <XAxis dataKey="timestamp" tickFormatter={(tick) => new Date(tick).toLocaleTimeString()} />
                 <YAxis />
                 <Tooltip labelFormatter={(label: any) => new Date(label).toLocaleTimeString()} />
-                <Line type="monotone" dataKey="RPS" stroke="#8884d8" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="rps" stroke="#8884d8" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </CardContent>
@@ -147,10 +147,10 @@ export default function LoadBalancerDetail() {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={history}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="Timestamp" tickFormatter={(tick) => new Date(tick).toLocaleTimeString()} />
+                <XAxis dataKey="timestamp" tickFormatter={(tick) => new Date(tick).toLocaleTimeString()} />
                 <YAxis />
                 <Tooltip labelFormatter={(label: any) => new Date(label).toLocaleTimeString()} />
-                <Line type="monotone" dataKey="AvgLatencyMs" stroke="#82ca9d" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="avg_latency_ms" stroke="#82ca9d" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </CardContent>
@@ -174,8 +174,8 @@ export default function LoadBalancerDetail() {
                 </div>
                 <div className="flex gap-4 items-center">
                   <div className="text-sm text-right">
-                    <div className="font-medium">{b.metrics?.RPS || 0} RPS</div>
-                    <div className="text-muted-foreground">{b.metrics?.AvgLatencyMs || 0} ms</div>
+                    <div className="font-medium">{b.metrics?.rps || 0} RPS</div>
+                    <div className="text-muted-foreground">{b.metrics?.avg_latency_ms || 0} ms</div>
                   </div>
                   <div className="flex gap-2">
                     <Badge variant={b.enabled ? "outline" : "secondary"}>{b.enabled ? "ENABLED" : "DISABLED"}</Badge>
