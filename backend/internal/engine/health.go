@@ -158,7 +158,7 @@ func (hc *HealthChecker) checkBackend(backend models.BackendServer) {
 		}
 		
 		msg := fmt.Sprintf("Backend **%s** (%s) is now %s", backend.Name, target, statusStr)
-		hc.sendTelegramAlert(msg)
+		hc.SendTelegramAlert(msg)
 		if hc.onChange != nil {
 			go hc.onChange()
 		}
