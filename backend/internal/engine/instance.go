@@ -38,6 +38,7 @@ type LoadBalancerInstance struct {
 	httpsServer *http.Server
 	http3Server *http3.Server
 	tcpListener net.Listener
+	transport   *backendTransport // reference to close idle conns on failover
 	
 	backends atomic.Value // Store slice of *models.BackendServer
 	strategy Strategy
@@ -130,11 +131,25 @@ func (l *LoadBalancerInstance) updateBackends() {
 		Logger.WarnLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: all primary backends DOWN, switching to backup nodes", l.Config.Name))
 		activeBackends = backupBackends
 	}
+
+	// Build names for logging
+	names := make([]string, len(activeBackends))
+	for i, b := range activeBackends {
+		names[i] = fmt.Sprintf("%s(%s:%d)", b.Name, b.Address, b.Port)
+	}
+
 	if len(activeBackends) == 0 {
 		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("[CRITICAL] %s: ALL backends (primary + backup) are DOWN", l.Config.Name))
 		l.backends.Store([]*models.BackendServer{})
 	} else {
+		Logger.InfoLB(l.Config.Name, fmt.Sprintf("[BACKENDS] %s: active backends updated to: %v", l.Config.Name, names))
 		l.backends.Store(activeBackends)
+	}
+
+	// Close idle HTTP connections so requests are forced to reconnect
+	// to the new set of active backends (critical for failover/failback)
+	if l.transport != nil && l.transport.inner != nil {
+		l.transport.inner.CloseIdleConnections()
 	}
 }
 
@@ -414,13 +429,16 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 				}
 			}
 		},
-		Transport: &backendTransport{
-			lbID:     l.Config.ID,
-			strategy: l.strategy,
-			proxyProtocolEnabled: l.Config.ProxyProtocolEnabled,
-			proxyProtocolVersion: l.Config.ProxyProtocolVersion,
-			http2Enabled:         l.Config.Protocol == "https" || l.Config.BackendHTTP2Enabled,
-		},
+		Transport: func() http.RoundTripper {
+			l.transport = &backendTransport{
+				lbID:     l.Config.ID,
+				strategy: l.strategy,
+				proxyProtocolEnabled: l.Config.ProxyProtocolEnabled,
+				proxyProtocolVersion: l.Config.ProxyProtocolVersion,
+				http2Enabled:         l.Config.Protocol == "https" || l.Config.BackendHTTP2Enabled,
+			}
+			return l.transport
+		}(),
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Proxy error to %s: %v", r.URL.String(), err))
 			w.WriteHeader(http.StatusBadGateway)
