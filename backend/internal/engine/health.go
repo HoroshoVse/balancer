@@ -82,12 +82,12 @@ func (hc *HealthChecker) checkAll() {
 			if !backend.Enabled || !backend.HCEnabled {
 				continue
 			}
-			go hc.checkBackend(backend)
+			go hc.checkBackend(backend, lb.Name)
 		}
 	}
 }
 
-func (hc *HealthChecker) checkBackend(backend models.BackendServer) {
+func (hc *HealthChecker) checkBackend(backend models.BackendServer, lbName string) {
 	port := backend.Port
 	if backend.HCPort > 0 {
 		port = backend.HCPort
@@ -152,12 +152,12 @@ func (hc *HealthChecker) checkBackend(backend models.BackendServer) {
 		statusStr := "UP 🟢"
 		if !isUp {
 			statusStr = "DOWN 🔴"
-			Logger.Warn(fmt.Sprintf("HealthCheck FAILED for %s (%s)", backend.Name, target))
+			Logger.Warn(fmt.Sprintf("HealthCheck FAILED for %s (%s) in LB %s", backend.Name, target, lbName))
 		} else {
-			Logger.Info(fmt.Sprintf("HealthCheck OK for %s (%s)", backend.Name, target))
+			Logger.Info(fmt.Sprintf("HealthCheck OK for %s (%s) in LB %s", backend.Name, target, lbName))
 		}
 		
-		msg := fmt.Sprintf("Backend **%s** (%s) is now %s", backend.Name, target, statusStr)
+		msg := fmt.Sprintf("Load Balancer **%s**\nBackend **%s** (%s) is now %s", lbName, backend.Name, target, statusStr)
 		hc.SendTelegramAlert(msg)
 		if hc.onChange != nil {
 			go hc.onChange()
