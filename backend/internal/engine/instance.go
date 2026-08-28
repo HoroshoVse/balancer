@@ -406,6 +406,7 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			
 			// Store selected backend in request context for the Transport
 			ctx := context.WithValue(req.Context(), "selected_backend", target)
+			ctx = context.WithValue(ctx, ctxKeyRequestHost, req.Host) // Stash SNI
 			*req = *req.WithContext(ctx)
 			
 			scheme := "http"
@@ -414,12 +415,11 @@ func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
 			}
 			
 			req.URL.Scheme = scheme
-			// req.URL.Host must stay as the original domain for correct TLS SNI.
-			// The DialContext override in backendTransport routes to the actual backend IP.
-			req.URL.Host = req.Host
-			if req.URL.Host == "" {
-				req.URL.Host = fmt.Sprintf("%s:%d", target.Address, target.Port)
-			}
+			// req.URL.Host determines the http.Transport connection pool key.
+			// It MUST be the backend's address so connections are pooled per-backend.
+			req.URL.Host = fmt.Sprintf("%s:%d", target.Address, target.Port)
+			// req.Host determines the Host header sent to the backend.
+			// We leave req.Host untouched to preserve the original client requested domain.
 			req.URL.Path = req.URL.Path
 
 			if err == nil {
@@ -640,12 +640,6 @@ func (t *backendTransport) getTransport() *http.Transport {
 			InsecureSkipVerify: true,
 		}
 
-		// Disable keep-alive connection pooling.
-		// This ensures DialContext is called for EVERY request, which is
-		// critical for load balancing: the strategy selects a backend in
-		// DialContext, and without this, idle connections are reused,
-		// sending all requests to the same backend.
-		tr.DisableKeepAlives = true
 		tr.ForceAttemptHTTP2 = false
 
 		baseDial := tr.DialContext
@@ -698,6 +692,36 @@ func (t *backendTransport) getTransport() *http.Transport {
 			return conn, nil
 		}
 
+		tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			baseConn, err := tr.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			
+			sni := ""
+			if reqHost, ok := ctx.Value(ctxKeyRequestHost).(string); ok {
+				sni = reqHost
+			}
+			
+			tlsConfig := tr.TLSClientConfig.Clone()
+			if sni != "" {
+				// Trim port if present for SNI
+				host, _, err := net.SplitHostPort(sni)
+				if err != nil {
+					host = sni
+				}
+				tlsConfig.ServerName = host
+			}
+			
+			tlsConn := tls.Client(baseConn, tlsConfig)
+			err = tlsConn.HandshakeContext(ctx)
+			if err != nil {
+				baseConn.Close()
+				return nil, err
+			}
+			return tlsConn, nil
+		}
+
 		t.inner = tr
 	})
 	return t.inner
@@ -707,6 +731,7 @@ func (t *backendTransport) getTransport() *http.Transport {
 type ctxKey string
 
 const ctxKeyRemoteAddr ctxKey = "remote_addr"
+const ctxKeyRequestHost ctxKey = "request_host"
 
 func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	start := time.Now()
