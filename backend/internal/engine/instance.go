@@ -47,6 +47,7 @@ type LoadBalancerInstance struct {
 	
 	acmeStatus atomic.Value // Store string
 	acmeError  atomic.Value // Store string
+	failoverState int32 // 0: init, 1: primary, 2: backup, 3: all down
 
 	udpSessions sync.Map // Map clientAddr(string) -> *udpSession
 }
@@ -125,11 +126,32 @@ func (l *LoadBalancerInstance) updateBackends() {
 
 	// Failover logic: use primaries if any are healthy, otherwise use backups
 	var activeBackends []*models.BackendServer
+	newState := int32(0)
 	if len(primaryBackends) > 0 {
 		activeBackends = primaryBackends
+		newState = 1 // primary
 	} else if len(backupBackends) > 0 {
 		Logger.WarnLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: all primary backends DOWN, switching to backup nodes", l.Config.Name))
 		activeBackends = backupBackends
+		newState = 2 // backup
+	} else {
+		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("[CRITICAL] %s: ALL backends (primary + backup) are DOWN", l.Config.Name))
+		newState = 3 // all down
+	}
+
+	// Send failover alerts
+	oldState := atomic.SwapInt32(&l.failoverState, newState)
+	if oldState != 0 && oldState != newState && l.healthChecker != nil {
+		if newState == 1 && oldState != 1 {
+			msg := fmt.Sprintf("✅ Load Balancer %s: Primary nodes recovered. Switched back to Primary nodes.", l.Config.Name)
+			l.healthChecker.SendTelegramAlert(msg)
+		} else if newState == 2 && oldState == 1 {
+			msg := fmt.Sprintf("⚠️ Load Balancer %s: All primary nodes are DOWN. Switched to Backup nodes.", l.Config.Name)
+			l.healthChecker.SendTelegramAlert(msg)
+		} else if newState == 3 && oldState != 3 {
+			msg := fmt.Sprintf("❌ Load Balancer %s: CRITICAL! All nodes (primary and backup) are DOWN!", l.Config.Name)
+			l.healthChecker.SendTelegramAlert(msg)
+		}
 	}
 
 	// Build names for logging
@@ -139,7 +161,6 @@ func (l *LoadBalancerInstance) updateBackends() {
 	}
 
 	if len(activeBackends) == 0 {
-		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("[CRITICAL] %s: ALL backends (primary + backup) are DOWN", l.Config.Name))
 		l.backends.Store([]*models.BackendServer{})
 	} else {
 		Logger.InfoLB(l.Config.Name, fmt.Sprintf("[BACKENDS] %s: active backends updated to: %v", l.Config.Name, names))

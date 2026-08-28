@@ -166,7 +166,7 @@ func (hc *HealthChecker) checkBackend(backend models.BackendServer) {
 	}
 }
 
-func (hc *HealthChecker) sendTelegramAlert(message string) {
+func (hc *HealthChecker) SendTelegramAlert(message string) {
 	var settings models.Settings
 	if err := hc.db.First(&settings).Error; err != nil {
 		return

@@ -92,7 +92,7 @@ export default function LoadBalancerDetail() {
             <CardTitle className="text-sm font-medium">Requests per Second</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{latestHistory?.rps || 0}</div>
+            <div className="text-2xl font-bold">{Math.round(latestHistory?.rps || 0)}</div>
           </CardContent>
         </Card>
         <Card>
@@ -100,7 +100,7 @@ export default function LoadBalancerDetail() {
             <CardTitle className="text-sm font-medium">Avg Latency</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{latestHistory?.avg_latency_ms || 0} ms</div>
+            <div className="text-2xl font-bold">{Math.round(latestHistory?.avg_latency_ms || 0)} ms</div>
           </CardContent>
         </Card>
         <Card>
@@ -173,9 +173,9 @@ export default function LoadBalancerDetail() {
                   </div>
                 </div>
                 <div className="flex gap-4 items-center">
-                  <div className="text-sm text-right">
-                    <div className="font-medium">{b.metrics?.rps || 0} RPS</div>
-                    <div className="text-muted-foreground">{b.metrics?.avg_latency_ms || 0} ms</div>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="text-sm font-medium">{Math.round(b.metrics?.rps || 0)} RPS</span>
+                    <span className="text-sm text-muted-foreground">{Math.round(b.metrics?.avg_latency_ms || 0)} ms</span>
                   </div>
                   <div className="flex gap-2">
                     <Badge variant={b.enabled ? "outline" : "secondary"}>{b.enabled ? "ENABLED" : "DISABLED"}</Badge>
