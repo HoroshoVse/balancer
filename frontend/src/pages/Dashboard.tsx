@@ -116,7 +116,7 @@ export default function Dashboard() {
                   <YAxis yAxisId="right" orientation="right" className="text-xs" />
                   <Tooltip 
                     labelFormatter={(label: any) => { const d = new Date(Number(label)); return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(); }} 
-                    formatter={(value: number, name: string) => [Math.round(value), name]}
+                    formatter={(value: any, name: any) => [Math.round(Number(value) || 0), name]}
                   />
                   <Line yAxisId="left" type="monotone" dataKey="rps" stroke="#8884d8" strokeWidth={2} name="RPS" dot={false} />
                   <Line yAxisId="right" type="monotone" dataKey="avg_latency_ms" stroke="#82ca9d" strokeWidth={2} name="Latency (ms)" dot={false} />
