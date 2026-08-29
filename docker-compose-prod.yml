@@ -1,0 +1,35 @@
+services:
+  backend:
+    image: ghcr.io/horoshovse/balancer-backend:latest
+    network_mode: "host"
+    volumes:
+      - ./backend/certs:/app/certs
+      - ./backend/data:/app/data
+    environment:
+      # Connect to the database via localhost because network_mode: host bypasses Docker DNS
+      - DB_DSN=postgres://balancer:balancer@127.0.0.1:54432/balancer?sslmode=disable
+      - DEV_MODE=false
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: balancer
+      POSTGRES_PASSWORD: balancer
+      POSTGRES_DB: balancer
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:54432:5432" # Bind only to localhost for security
+    restart: unless-stopped
+
+  frontend:
+    image: ghcr.io/horoshovse/balancer-frontend:latest
+    ports:
+      - "3000:80"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
