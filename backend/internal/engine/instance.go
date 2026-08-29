@@ -338,43 +338,6 @@ func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
 func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPAddr, clientConn *net.UDPConn) {
 	clientKey := clientAddr.String()
 
-	// Check for existing session
-	if val, ok := l.udpSessions.Load(clientKey); ok {
-		sess := val.(*udpSession)
-		sess.lastSeen = time.Now()
-		_, err := sess.conn.Write(data)
-		if err != nil {
-			sess.conn.Close()
-			l.udpSessions.Delete(clientKey)
-		} else {
-			return
-		}
-	}
-
-	// Create new session
-	backends := l.backends.Load().([]*models.BackendServer)
-	target := l.strategy.Next(backends, clientAddr.IP.String())
-	if target == nil {
-		Metrics.RecordRequest(l.Config.ID, 0, true)
-		return
-	}
-
-	targetAddr := fmt.Sprintf("%s:%d", target.Address, target.Port)
-	start := time.Now()
-	backendConn, err := net.Dial("udp", targetAddr)
-	if err != nil {
-		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
-		Metrics.RecordRequest(l.Config.ID, time.Since(start), true)
-		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
-		return
-	}
-
-	sess := &udpSession{
-		conn:     backendConn,
-		lastSeen: time.Now(),
-	}
-	l.udpSessions.Store(clientKey, sess)
-
 	payload := data
 	if l.Config.ProxyProtocolEnabled {
 		clientIP, clientPort, _ := net.SplitHostPort(clientAddr.String())
@@ -404,6 +367,42 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to format PROXY protocol header: %v", err))
 		}
 	}
+
+	// Check for existing session
+	if val, ok := l.udpSessions.Load(clientKey); ok {
+		sess := val.(*udpSession)
+		sess.lastSeen = time.Now()
+		_, err := sess.conn.Write(payload)
+		if err != nil {
+			sess.conn.Close()
+			l.udpSessions.Delete(clientKey)
+		}
+		return
+	}
+
+	// Create new session
+	backends := l.backends.Load().([]*models.BackendServer)
+	target := l.strategy.Next(backends, clientAddr.IP.String())
+	if target == nil {
+		Metrics.RecordRequest(l.Config.ID, 0, true)
+		return
+	}
+
+	targetAddr := fmt.Sprintf("%s:%d", target.Address, target.Port)
+	start := time.Now()
+	backendConn, err := net.Dial("udp", targetAddr)
+	if err != nil {
+		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
+		Metrics.RecordRequest(l.Config.ID, time.Since(start), true)
+		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
+		return
+	}
+
+	sess := &udpSession{
+		conn:     backendConn,
+		lastSeen: time.Now(),
+	}
+	l.udpSessions.Store(clientKey, sess)
 
 	// Write the initial packet
 	_, err = backendConn.Write(payload)
