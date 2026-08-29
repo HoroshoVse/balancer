@@ -35,8 +35,8 @@ interface BackendNode {
   sni?: string
 }
 
-const emptyBackend = (index: number = 1): BackendNode => ({
-  name: `Node ${index}`,
+const emptyBackend = (): BackendNode => ({
+  name: "",
   address: "",
   port: "",
   weight: 1,
@@ -118,7 +118,7 @@ export default function LoadBalancers() {
   }
 
   // --- Backend node helpers ---
-  const addBackend = () => setBackends([...backends, emptyBackend(backends.length + 1)])
+  const addBackend = () => setBackends([...backends, emptyBackend()])
   const removeBackend = (i: number) => setBackends(backends.filter((_, idx) => idx !== i))
   const updateBackend = (i: number, field: keyof BackendNode, value: any) => {
     const updated = [...backends]
@@ -208,7 +208,7 @@ export default function LoadBalancers() {
         backends: backends.filter(b => b.address.trim()).map(b => ({
           name: b.name || b.address,
           address: b.address,
-          port: b.port,
+          port: typeof b.port === 'string' && b.port === '' ? 0 : b.port,
           weight: b.weight,
           enabled: b.enabled,
           backup: b.backup,
@@ -216,7 +216,7 @@ export default function LoadBalancers() {
           tls_enabled: b.tls_enabled,
           hc_enabled: b.hc_enabled,
           hc_protocol: b.hc_protocol,
-          hc_port: b.hc_port,
+          hc_port: typeof b.hc_port === 'string' && b.hc_port === '' ? 0 : b.hc_port,
           hc_path: b.hc_path,
           hc_interval: b.hc_interval,
           hc_timeout: b.hc_timeout,
@@ -312,7 +312,7 @@ export default function LoadBalancers() {
         backends: backends.filter(b => b.address.trim()).map(b => ({
           name: b.name || b.address,
           address: b.address,
-          port: b.port,
+          port: typeof b.port === 'string' && b.port === '' ? 0 : b.port,
           weight: b.weight,
           enabled: b.enabled !== undefined ? b.enabled : true,
           backup: b.backup || false,
@@ -320,7 +320,7 @@ export default function LoadBalancers() {
           tls_enabled: b.tls_enabled || false,
           hc_enabled: b.hc_enabled,
           hc_protocol: b.hc_protocol,
-          hc_port: b.hc_port,
+          hc_port: typeof b.hc_port === 'string' && b.hc_port === '' ? 0 : b.hc_port,
           hc_path: b.hc_path,
           hc_interval: b.hc_interval,
           hc_timeout: b.hc_timeout,

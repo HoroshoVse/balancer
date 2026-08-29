@@ -355,6 +355,7 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	backends := l.backends.Load().([]*models.BackendServer)
 	target := l.strategy.Next(backends, clientAddr.IP.String())
 	if target == nil {
+		Metrics.RecordRequest(l.Config.ID, 0, true)
 		return
 	}
 
@@ -363,6 +364,7 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	backendConn, err := net.Dial("udp", targetAddr)
 	if err != nil {
 		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
+		Metrics.RecordRequest(l.Config.ID, time.Since(start), true)
 		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
 		return
 	}
@@ -377,12 +379,14 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	_, err = backendConn.Write(data)
 	if err != nil {
 		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
+		Metrics.RecordRequest(l.Config.ID, time.Since(start), true)
 		backendConn.Close()
 		l.udpSessions.Delete(clientKey)
 		return
 	}
 	
 	Metrics.RecordBackendRequest(target.ID, time.Since(start), false)
+	Metrics.RecordRequest(l.Config.ID, time.Since(start), false)
 
 	// Goroutine to read from backend and write back to client
 	go func() {
