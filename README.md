@@ -22,13 +22,12 @@ Balancer — это современный, высокопроизводител
 git clone https://github.com/HoroshoVse/balancer.git
 cd balancer
 ```
-*(Вам нужен только файл `docker-compose.yml`, исходные коды папок backend и frontend сервером не используются при запуске).*
 
 
 ```
 
 ### Шаг 2. Запуск балансировщика
-Скачайте актуальные образы и запустите контейнеры:
+
 ```bash
 docker compose pull
 docker compose up -d
