@@ -1,18 +1,13 @@
 services:
   backend:
     image: ghcr.io/horoshovse/balancer-backend:latest
-    ports:
-      - "8081:80"
-      - "443:443"
-      - "443:443/udp" # for QUIC/HTTP3
-      - "8080:8080" # API & UI port
-      - "53:53/udp" # DNS UDP
-      - "53:53/tcp" # DNS TCP
+    network_mode: "host"
     volumes:
       - ./backend/certs:/app/certs
       - ./backend/data:/app/data
     environment:
-      - DB_DSN=postgres://balancer:balancer@db:5432/balancer?sslmode=disable
+      # Connect to the database via localhost because network_mode: host bypasses Docker DNS
+      - DB_DSN=postgres://balancer:balancer@127.0.0.1:54432/balancer?sslmode=disable
       - DEV_MODE=false
     depends_on:
       - db
@@ -27,7 +22,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "54432:5432"
+      - "127.0.0.1:54432:5432" # Bind only to localhost for security
     restart: unless-stopped
 
   frontend:
