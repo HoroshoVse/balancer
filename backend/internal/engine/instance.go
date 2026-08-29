@@ -375,8 +375,38 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	}
 	l.udpSessions.Store(clientKey, sess)
 
+	payload := data
+	if l.Config.ProxyProtocolEnabled {
+		clientIP, clientPort, _ := net.SplitHostPort(clientAddr.String())
+		destIP, destPort, _ := net.SplitHostPort(fmt.Sprintf("%s:%d", l.Config.ListenIP, l.Config.ListenPort))
+		
+		header := &proxyproto.Header{
+			Version:           byte(l.Config.ProxyProtocolVersion),
+			Command:           proxyproto.PROXY,
+			TransportProtocol: proxyproto.UDPv4,
+			SourceAddr: &net.UDPAddr{
+				IP:   net.ParseIP(clientIP),
+				Port: parsePort(clientPort),
+			},
+			DestinationAddr: &net.UDPAddr{
+				IP:   net.ParseIP(destIP),
+				Port: parsePort(destPort),
+			},
+		}
+		if clientAddr.IP.To4() == nil {
+			header.TransportProtocol = proxyproto.UDPv6
+		}
+
+		headerBytes, err := header.Format()
+		if err == nil {
+			payload = append(headerBytes, payload...)
+		} else {
+			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to format PROXY protocol header: %v", err))
+		}
+	}
+
 	// Write the initial packet
-	_, err = backendConn.Write(data)
+	_, err = backendConn.Write(payload)
 	if err != nil {
 		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
 		Metrics.RecordRequest(l.Config.ID, time.Since(start), true)
