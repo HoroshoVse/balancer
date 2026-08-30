@@ -60,7 +60,7 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{metrics.total_requests.toLocaleString()}</div>
-            <p className="text-xs text-muted-foreground">+19% from last hour</p>
+            <p className="text-xs text-muted-foreground">Total processed requests</p>
           </CardContent>
         </Card>
         <Card>
@@ -70,9 +70,12 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{metrics.healthy_backends} / {metrics.total_backends}</div>
-            <p className="text-xs text-green-500 flex items-center">
-              <ArrowUpRight className="h-4 w-4 mr-1" />
-              All systems operational
+            <p className={`text-xs flex items-center ${metrics.healthy_backends === metrics.total_backends && metrics.total_backends > 0 ? "text-green-500" : "text-yellow-500"}`}>
+              {metrics.healthy_backends === metrics.total_backends && metrics.total_backends > 0 ? (
+                <><ArrowUpRight className="h-4 w-4 mr-1" /> All systems operational</>
+              ) : (
+                <><ArrowDownRight className="h-4 w-4 mr-1" /> Some systems down</>
+              )}
             </p>
           </CardContent>
         </Card>
@@ -93,9 +96,12 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{metrics.error_rate_percent.toFixed(2)}%</div>
-            <p className="text-xs text-red-500 flex items-center">
-              <ArrowDownRight className="h-4 w-4 mr-1" />
-              Slight increase
+            <p className={`text-xs flex items-center ${metrics.error_rate_percent > 5 ? "text-red-500" : "text-green-500"}`}>
+              {metrics.error_rate_percent > 5 ? (
+                <><ArrowDownRight className="h-4 w-4 mr-1" /> High error rate</>
+              ) : (
+                <><ArrowUpRight className="h-4 w-4 mr-1" /> Normal</>
+              )}
             </p>
           </CardContent>
         </Card>
