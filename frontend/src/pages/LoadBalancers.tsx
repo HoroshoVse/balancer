@@ -221,7 +221,8 @@ export default function LoadBalancers() {
           hc_interval: b.hc_interval,
           hc_timeout: b.hc_timeout,
           hc_failure_threshold: b.hc_failure_threshold,
-          hc_recovery_threshold: b.hc_recovery_threshold
+          hc_recovery_threshold: b.hc_recovery_threshold,
+          sni: b.sni
         }))
       }
     }
@@ -325,7 +326,8 @@ export default function LoadBalancers() {
           hc_interval: b.hc_interval,
           hc_timeout: b.hc_timeout,
           hc_failure_threshold: b.hc_failure_threshold,
-          hc_recovery_threshold: b.hc_recovery_threshold
+          hc_recovery_threshold: b.hc_recovery_threshold,
+          sni: b.sni
         }))
       }
     }
