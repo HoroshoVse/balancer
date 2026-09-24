@@ -49,28 +49,44 @@ func (e *Engine) ReloadConfig() error {
 		return err
 	}
 
-	// For simplicity in this version, we will stop all and start new ones
-	// A production zero-downtime would swap routing tables inside existing listeners.
-	for _, inst := range e.activeBalancers {
-		inst.Stop()
-	}
-	
-	// Wait briefly to ensure listeners release their ports
-	time.Sleep(500 * time.Millisecond)
-	e.activeBalancers = make(map[uint]*LoadBalancerInstance)
+	currentLBs := make(map[uint]bool)
 
 	for _, lb := range lbs {
-		inst := NewLoadBalancerInstance(lb, e.db, e.healthChecker)
-		e.activeBalancers[lb.ID] = inst
-		go func(l models.LoadBalancer, instance *LoadBalancerInstance) {
-			if err := instance.Start(); err != nil {
-				if err == http.ErrServerClosed || strings.Contains(err.Error(), "use of closed network connection") {
-					// Normal shutdown
-					return
-				}
-				Logger.Error(fmt.Sprintf("Failed to start LB %s: %v", l.Name, err))
+		currentLBs[lb.ID] = true
+		inst, exists := e.activeBalancers[lb.ID]
+
+		needsRestart := false
+		if !exists {
+			needsRestart = true
+		} else if lb.UpdatedAt.Unix() != inst.Config.UpdatedAt.Unix() {
+			// Configuration changed (updated in DB), so we restart this specific balancer
+			needsRestart = true
+		}
+
+		if needsRestart {
+			if exists {
+				inst.Stop()
+				time.Sleep(100 * time.Millisecond) // brief wait for port release
 			}
-		}(lb, inst)
+			newInst := NewLoadBalancerInstance(lb, e.db, e.healthChecker)
+			e.activeBalancers[lb.ID] = newInst
+			go func(l models.LoadBalancer, instance *LoadBalancerInstance) {
+				if err := instance.Start(); err != nil {
+					if err == http.ErrServerClosed || strings.Contains(err.Error(), "use of closed network connection") {
+						return
+					}
+					Logger.Error(fmt.Sprintf("Failed to start LB %s: %v", l.Name, err))
+				}
+			}(lb, newInst)
+		}
+	}
+
+	// Stop deleted LBs
+	for id, inst := range e.activeBalancers {
+		if !currentLBs[id] {
+			inst.Stop()
+			delete(e.activeBalancers, id)
+		}
 	}
 
 	return nil
