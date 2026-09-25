@@ -226,6 +226,17 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 	}
 	Metrics.RecordBackendRequest(target.ID, dialLatency, false)
 
+	// If TLSEnabled is true for this backend, wrap the connection in TLS
+	if target.TLSEnabled {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: true, // We don't verify backend certs by default
+		}
+		if target.SNI != "" {
+			tlsConfig.ServerName = target.SNI
+		}
+		backendConn = tls.Client(backendConn, tlsConfig)
+	}
+
 	if l.Config.ProxyProtocolEnabled {
 		clientIP, clientPort, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
 		destIP, destPort, _ := net.SplitHostPort(clientConn.LocalAddr().String())
