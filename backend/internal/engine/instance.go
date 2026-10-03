@@ -54,7 +54,7 @@ type LoadBalancerInstance struct {
 
 type udpSession struct {
 	conn     net.Conn
-	lastSeen time.Time
+	lastSeen int64 // atomic unix timestamp
 }
 
 func NewLoadBalancerInstance(config models.LoadBalancer, db *gorm.DB, hc *HealthChecker) *LoadBalancerInstance {
@@ -313,10 +313,12 @@ func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
 				conn.Close()
 				return
 			case <-cleanupTicker.C:
-				now := time.Now()
+				now := time.Now().Unix()
 				l.udpSessions.Range(func(key, value interface{}) bool {
 					sess := value.(*udpSession)
-					if now.Sub(sess.lastSeen) > 30*time.Second {
+					lastSeen := atomic.LoadInt64(&sess.lastSeen)
+					// Use 10 second timeout for UDP to prevent port exhaustion (DNS queries are fast)
+					if now-lastSeen > 10 {
 						sess.conn.Close()
 						l.udpSessions.Delete(key)
 					}
@@ -382,7 +384,7 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	// Check for existing session
 	if val, ok := l.udpSessions.Load(clientKey); ok {
 		sess := val.(*udpSession)
-		sess.lastSeen = time.Now()
+		atomic.StoreInt64(&sess.lastSeen, time.Now().Unix())
 		_, err := sess.conn.Write(payload)
 		if err != nil {
 			sess.conn.Close()
@@ -411,7 +413,7 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 
 	sess := &udpSession{
 		conn:     backendConn,
-		lastSeen: time.Now(),
+		lastSeen: time.Now().Unix(),
 	}
 	l.udpSessions.Store(clientKey, sess)
 
@@ -438,7 +440,7 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 				l.udpSessions.Delete(clientKey)
 				return
 			}
-			sess.lastSeen = time.Now()
+			atomic.StoreInt64(&sess.lastSeen, time.Now().Unix())
 			_, err = clientConn.WriteToUDP(buf[:n], clientAddr)
 			if err != nil {
 				backendConn.Close()
