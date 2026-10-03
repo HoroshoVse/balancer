@@ -300,7 +300,7 @@ func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
 	Logger.InfoLB(l.Config.Name, fmt.Sprintf("UDP LoadBalancer %s listening on %s", l.Config.Name, addr))
 
 	go func() {
-		cleanupTicker := time.NewTicker(10 * time.Second)
+		cleanupTicker := time.NewTicker(30 * time.Second)
 		defer cleanupTicker.Stop()
 		for {
 			select {
@@ -317,8 +317,7 @@ func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
 				l.udpSessions.Range(func(key, value interface{}) bool {
 					sess := value.(*udpSession)
 					lastSeen := atomic.LoadInt64(&sess.lastSeen)
-					// Use 10 second timeout for UDP to prevent port exhaustion (DNS queries are fast)
-					if now-lastSeen > 10 {
+					if now-lastSeen > 60 {
 						sess.conn.Close()
 						l.udpSessions.Delete(key)
 					}
@@ -388,7 +387,10 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 		_, err := sess.conn.Write(payload)
 		if err != nil {
 			sess.conn.Close()
-			l.udpSessions.Delete(clientKey)
+			// Only delete if it's still our session
+			if cur, ok := l.udpSessions.Load(clientKey); ok && cur.(*udpSession) == sess {
+				l.udpSessions.Delete(clientKey)
+			}
 		}
 		return
 	}
@@ -437,14 +439,19 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 			n, err := backendConn.Read(buf)
 			if err != nil {
 				backendConn.Close()
-				l.udpSessions.Delete(clientKey)
+				// Only delete the session if it's still ours (not replaced by a newer session)
+				if cur, ok := l.udpSessions.Load(clientKey); ok && cur.(*udpSession) == sess {
+					l.udpSessions.Delete(clientKey)
+				}
 				return
 			}
 			atomic.StoreInt64(&sess.lastSeen, time.Now().Unix())
 			_, err = clientConn.WriteToUDP(buf[:n], clientAddr)
 			if err != nil {
 				backendConn.Close()
-				l.udpSessions.Delete(clientKey)
+				if cur, ok := l.udpSessions.Load(clientKey); ok && cur.(*udpSession) == sess {
+					l.udpSessions.Delete(clientKey)
+				}
 				return
 			}
 		}
