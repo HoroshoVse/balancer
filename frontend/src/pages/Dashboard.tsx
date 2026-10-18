@@ -1,12 +1,15 @@
+import { useRef } from "react"
 import { Link } from "react-router-dom"
 import { ArrowDown, ArrowUp, Check, Globe, Plus, ShieldCheck, Terminal, TriangleAlert } from "lucide-react"
 import { api, canEdit } from "@/lib/api"
+import { across, branch, down, flowOf, shareWidth, useMeasured, type FlowPath } from "@/lib/flow"
 import { humanize, type EventKind } from "@/lib/humanize"
 import { useLBs } from "@/lib/lbs"
 import { activeNodes, algorithmLabel, formatNumber, kindLabel, kindOf, lbHealth, listenAddr, plural } from "@/lib/lbModel"
 import { recipeList } from "@/lib/recipes"
 import { usePoll } from "@/lib/usePoll"
 import { Bars } from "@/components/Bars"
+import { FlowPaths } from "@/components/Flow"
 import type { BackendNode, HostStats, LoadBalancer, LogEntry, MetricsSnapshot } from "@/types"
 
 function Readout({ label, value, unit, children, last }: { label: string; value: string; unit: string; children: React.ReactNode; last?: boolean }) {
@@ -24,15 +27,6 @@ function Readout({ label, value, unit, children, last }: { label: string; value:
 
 // --- Flow ---
 
-function Band({ thickness, slow }: { thickness: number; slow?: boolean }) {
-  if (thickness <= 0) return <div aria-hidden="true" className="min-w-10 flex-1 border-t-2 border-dashed border-line-strong" />
-  return (
-    <div aria-hidden="true" className="relative min-w-10 flex-1 overflow-hidden rounded-full bg-cobalt" style={{ height: thickness }}>
-      <div className={`flow-dashes absolute inset-y-0 left-0 right-[-28px] ${slow ? "animate-flow-slow" : "animate-flow"}`} />
-    </div>
-  )
-}
-
 type NodeView = { node: BackendNode; state: "active" | "standby" | "down" | "off" }
 
 function nodeViews(lb: LoadBalancer): NodeView[] {
@@ -46,7 +40,7 @@ function nodeViews(lb: LoadBalancer): NodeView[] {
     .sort((a, b) => order[a.state] - order[b.state])
 }
 
-function NodeChip({ view }: { view: NodeView }) {
+function NodeChip({ view, nodeRef }: { view: NodeView; nodeRef: (el: HTMLDivElement | null) => void }) {
   const { node, state } = view
   const addr = `${node.address}:${node.port}`
   const styles = {
@@ -56,7 +50,7 @@ function NodeChip({ view }: { view: NodeView }) {
     off: { box: "border border-dashed border-line-strong bg-accent", dot: "bg-line-strong", role: "выключен", meta: addr },
   }[state]
   return (
-    <div className={`flex w-[230px] flex-none flex-col gap-0.5 rounded-xl px-3.5 py-2.5 ${styles.box}`}>
+    <div ref={nodeRef} data-flow className={`flex min-w-0 flex-col gap-0.5 rounded-xl px-3.5 py-2.5 ${styles.box}`}>
       <span className="flex items-center gap-2 text-sm font-semibold">
         <span className={`box-border h-2 w-2 flex-none rounded-full ${styles.dot}`} />
         <span className="truncate">{node.name || node.address}</span>
@@ -67,27 +61,62 @@ function NodeChip({ view }: { view: NodeView }) {
   )
 }
 
+// Room for clients 150 + balancer 250 + nodes 260 side by side, with links between them
+const FLOW_WIDE_MIN = 780
+
 function FlowRow({ lb, rps, maxRps }: { lb: LoadBalancer; rps: number; maxRps: number }) {
   const kind = kindOf(lb)
   const failed = lb.status === "error"
-  const thickness = rps > 0 && !failed ? Math.round(4 + 18 * (rps / maxRps)) : 0
+  const live = failed ? 0 : rps
   const views = nodeViews(lb)
-  const activeCount = views.filter((v) => v.state === "active").length
+  const flow = flowOf(lb, live)
+  const trunk = live > 0 ? Math.round(6 + 8 * (live / maxRps)) : 0
   const domain = (lb.acme_domains || "").split(",")[0]?.trim()
+
+  const rowRef = useRef<HTMLDivElement>(null)
+  const clientsRef = useRef<HTMLSpanElement>(null)
+  const lbRef = useRef<HTMLAnchorElement>(null)
+  const nodeRefs = useRef<(HTMLDivElement | null)[]>([])
+  const { wide, paths } = useMeasured(
+    rowRef,
+    (box, width) => {
+      const wide = width >= FLOW_WIDE_MIN
+      const clients = box(clientsRef.current)
+      const balancer = box(lbRef.current)
+      const paths: FlowPath[] = []
+      if (clients && balancer) {
+        paths.push({ d: wide ? across(clients, balancer, 10 + trunk / 2) : down(clients, clients.l + 9, balancer), kind: live > 0 ? "live" : "idle", width: trunk, share: 1 })
+        views.forEach((v, i) => {
+          const node = box(nodeRefs.current[i])
+          if (!node) return
+          const f = flow(v.node)
+          paths.push({ d: wide ? across(balancer, node) : branch(balancer, balancer.l + 24, node), kind: f.kind, width: shareWidth(trunk, f.share), share: f.share })
+        })
+      }
+      return { wide, paths }
+    },
+    { wide: true, paths: [] as FlowPath[] },
+  )
+
   return (
-    <div className="flex flex-wrap items-center gap-y-3">
-      <div className="flex w-[150px] flex-none flex-col gap-1">
-        <span className="inline-flex items-center gap-2 text-[15px] font-semibold">
-          <Globe className="h-[18px] w-[18px] text-ink-2" aria-hidden="true" />
-          Клиенты
+    <div ref={rowRef} className={`relative flex ${wide ? "items-center" : "flex-col items-stretch gap-8"}`}>
+      <FlowPaths paths={paths} />
+      <div className={`relative flex-none ${wide ? "w-[150px]" : ""}`}>
+        <span ref={clientsRef} data-flow className={`inline-flex ${wide ? "flex-col gap-1" : "items-center gap-3"}`}>
+          <span className="inline-flex items-center gap-2 text-[15px] font-semibold">
+            <Globe className="h-[18px] w-[18px] text-ink-2" aria-hidden="true" />
+            Клиенты
+          </span>
+          <span className="font-mono text-xs text-ink-3">{live > 0 ? `${formatNumber(live, live < 10 ? 1 : 0)} запр/с` : "нет трафика"}</span>
         </span>
-        <span className="font-mono text-xs text-ink-3">{rps > 0 ? `${formatNumber(rps, rps < 10 ? 1 : 0)} запр/с` : "нет трафика"}</span>
       </div>
-      <Band thickness={thickness} slow={thickness < 8} />
+      {wide && <div aria-hidden="true" className="min-w-[48px] flex-1" />}
       <Link
+        ref={lbRef}
+        data-flow
         to={`/lbs/${lb.id}`}
         title={lb.status_error || undefined}
-        className={`flex w-[250px] flex-none flex-col gap-1.5 rounded-[14px] bg-rail px-4 py-3.5 text-rail-text ${failed ? "ring-2 ring-down" : ""}`}
+        className={`relative flex flex-none flex-col gap-1.5 rounded-[14px] bg-rail px-4 py-3.5 text-rail-text ${wide ? "w-[250px]" : ""} ${failed ? "ring-2 ring-down" : ""}`}
       >
         <span className="flex items-center justify-between gap-2">
           <span className="truncate text-base font-semibold text-white">{lb.name}</span>
@@ -99,17 +128,17 @@ function FlowRow({ lb, rps, maxRps }: { lb: LoadBalancer; rps: number; maxRps: n
         </span>
         <span className={`text-xs ${failed ? "text-[#FF9A6B]" : "text-cobalt-light"}`}>{failed ? "не запущен — подробности внутри" : algorithmLabel[lb.algorithm] ?? lb.algorithm}</span>
       </Link>
-      <div className="flex min-w-[300px] flex-[1_1_340px] flex-col gap-3.5">
-        {views.length === 0 && <span className="pl-4 text-sm text-ink-3">узлов нет</span>}
-        {views.map((v) => (
-          <div key={v.node.id ?? v.node.address} className="flex items-center">
-            {v.state === "active" && thickness > 0 ? (
-              <Band thickness={Math.max(3, Math.round(thickness / Math.max(activeCount, 1)))} slow={thickness < 8} />
-            ) : (
-              <div aria-hidden="true" className={`min-w-10 flex-1 border-t-2 border-dashed ${v.state === "down" ? "border-down/60" : "border-[#8B95A4]"}`} />
-            )}
-            <NodeChip view={v} />
-          </div>
+      {wide && <div aria-hidden="true" className="min-w-[56px] flex-1" />}
+      <div className={`relative flex flex-none flex-col gap-3 ${wide ? "w-[260px]" : "pl-12"}`}>
+        {views.length === 0 && <span className="text-sm text-ink-3">узлов нет</span>}
+        {views.map((v, i) => (
+          <NodeChip
+            key={v.node.id ?? v.node.address}
+            view={v}
+            nodeRef={(el) => {
+              nodeRefs.current[i] = el
+            }}
+          />
         ))}
       </div>
     </div>
@@ -466,11 +495,20 @@ export default function Dashboard() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-col gap-1">
                 <h2 id="flow-title" className="font-display text-xl font-semibold tracking-tight">Поток</h2>
-                <span className="text-sm text-ink-3">Толщина ленты — доля трафика. Пунктир — узлы, которые сейчас не получают запросов.</span>
+                <span className="text-sm text-ink-3">Точки — запросы, толщина линии — доля трафика узла. Пунктир — узлы, которые сейчас не получают запросов.</span>
               </div>
               <div className="flex gap-4 text-[13px] text-ink-2">
-                <span className="inline-flex items-center gap-1.5"><span className="h-2 w-[22px] rounded bg-cobalt" />трафик</span>
-                <span className="inline-flex items-center gap-1.5"><span className="w-[22px] border-t-2 border-dashed border-[#8B95A4]" />ожидание</span>
+                <span className="inline-flex items-center gap-1.5">
+                  <svg aria-hidden="true" width="26" height="10" fill="none">
+                    <path d="M 5 5 H 21" stroke="#E7EBFF" strokeWidth={10} strokeLinecap="round" />
+                    <path d="M 5 5 H 21" stroke="#2E4BFF" strokeWidth={5} strokeLinecap="round" strokeDasharray="0 8" />
+                  </svg>
+                  трафик
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <svg aria-hidden="true" width="22" height="10" fill="none"><path d="M 0 5 H 22" stroke="#B7C0CC" strokeWidth={2} strokeDasharray="5 6" /></svg>
+                  ожидание
+                </span>
               </div>
             </div>
             {lbs.map((lb, i) => (

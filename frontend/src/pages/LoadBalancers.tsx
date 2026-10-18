@@ -1,14 +1,16 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { Link } from "react-router-dom"
 import { toast } from "sonner"
 import { Ellipsis, Plus, Search } from "lucide-react"
 import { Bars } from "@/components/Bars"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { FlowPaths } from "@/components/Flow"
 import { AdviceCard, StatusPill } from "@/components/LBBits"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { adviceFor } from "@/lib/advice"
 import { api, canEdit, errorMessage } from "@/lib/api"
 import { describe, fromLB } from "@/lib/builderModel"
+import { across, branch, flowOf, shareWidth, useMeasured, type FlowPath } from "@/lib/flow"
 import { deleteLB, testNode } from "@/lib/lbActions"
 import { useLBs } from "@/lib/lbs"
 import { formatNumber, kindLabel, kindOf, listenAddr, type Kind } from "@/lib/lbModel"
@@ -49,20 +51,54 @@ function Tags({ lb }: { lb: LoadBalancer }) {
 function MiniTopology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
   const nodes = lb.backend_group?.backends ?? []
   const shown = nodes.slice(0, 4)
+  const live = lb.status === "error" ? 0 : rps
+  const flow = flowOf(lb, live)
+  const base = live > 0 ? Math.round(Math.min(12, 8 + live / 25)) : 0
+
+  const boxRef = useRef<HTMLDivElement>(null)
+  const portRef = useRef<HTMLSpanElement>(null)
+  const nodeRefs = useRef<(HTMLSpanElement | null)[]>([])
+  const { wide, paths } = useMeasured(
+    boxRef,
+    (box, width) => {
+      const port = box(portRef.current)
+      const pills = shown.map((_, i) => box(nodeRefs.current[i]))
+      // Side by side when the port, a link of 48 px and the widest node fit inside the padding
+      const widest = Math.max(0, ...pills.map((p) => (p ? p.r - p.l : 0)))
+      const wide = !port || width - 32 >= port.r - port.l + 48 + widest
+      const paths: FlowPath[] = []
+      if (port) {
+        pills.forEach((pill, i) => {
+          if (!pill) return
+          const f = flow(shown[i])
+          paths.push({ d: wide ? across(port, pill) : branch(port, port.l + 16, pill), kind: f.kind, width: shareWidth(base, f.share), share: f.share })
+        })
+      }
+      return { wide, paths }
+    },
+    { wide: true, paths: [] as FlowPath[] },
+  )
+
   return (
-    <div aria-label="Схема" className="flex items-center rounded-[14px] bg-accent p-4">
-      <span className="flex-none rounded-lg bg-rail px-2.5 py-1.5 font-mono text-xs text-rail-text">:{lb.listen_port}</span>
-      <span aria-hidden="true" className="min-w-10 flex-1 rounded-full bg-cobalt" style={{ height: rps > 0 ? Math.min(6, 2 + rps / 10) : 2, opacity: rps > 0 ? 1 : 0.35 }} />
-      <span className="flex flex-none flex-col gap-2">
+    <div ref={boxRef} aria-label="Схема" className={`relative flex rounded-[14px] bg-accent p-4 ${wide ? "items-center" : "flex-col items-start gap-4"}`}>
+      <FlowPaths paths={paths} />
+      <span ref={portRef} data-flow className="relative flex-none rounded-lg bg-rail px-2.5 py-1.5 font-mono text-xs text-rail-text">:{lb.listen_port}</span>
+      {wide && <span aria-hidden="true" className="min-w-12 flex-1" />}
+      {/* Equal widths side by side; natural widths when stacked, so the widest node measures the same either way */}
+      <span className={`relative flex flex-none flex-col gap-2 ${wide ? "" : "items-start pl-10"}`}>
         {nodes.length === 0 && <span className="text-[13px] text-ink-3">узлов нет</span>}
-        {shown.map((b) => {
+        {shown.map((b, i) => {
           const down = b.enabled && b.status === "DOWN"
           return (
             <span
               key={b.id ?? b.address}
+              ref={(el) => {
+                nodeRefs.current[i] = el
+              }}
+              data-flow
               className={`inline-flex h-[30px] items-center gap-2 rounded-lg px-2.5 text-[13px] ${b.backup ? "border border-dashed" : "border"} ${down ? "border-down/40 bg-down-soft" : "border-line bg-white"}`}
             >
-              <span className={`box-border h-[7px] w-[7px] rounded-full ${!b.enabled ? "bg-line-strong" : down ? "bg-down" : b.backup ? "border-2 border-ok" : "bg-ok"}`} />
+              <span className={`box-border h-[7px] w-[7px] flex-none rounded-full ${!b.enabled ? "bg-line-strong" : down ? "bg-down" : b.backup ? "border-2 border-ok" : "bg-ok"}`} />
               {b.name || b.address}
               <span className="font-mono text-ink-3">{!b.enabled ? "выкл." : down ? "не отвечает" : b.backup ? "резерв" : b.address}</span>
             </span>
@@ -227,7 +263,7 @@ export default function LoadBalancers() {
     <div className="flex flex-col gap-6">
       <header className="flex flex-wrap items-end justify-between gap-5">
         <div className="flex flex-col gap-2">
-          <h1 className="font-display text-[44px] font-semibold leading-[1.05] tracking-tight">Балансировщики</h1>
+          <h1 className="font-display text-[28px] font-semibold sm:text-[44px] leading-[1.05] tracking-tight">Балансировщики</h1>
           <p className="text-[17px] text-ink-2">Каждый объясняет, что делает, — без таблиц из флажков.</p>
         </div>
         {editable && (

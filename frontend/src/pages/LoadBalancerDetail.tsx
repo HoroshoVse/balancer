@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 import { Ellipsis, Globe, ShieldCheck } from "lucide-react"
@@ -10,6 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { adviceFor } from "@/lib/advice"
 import { api, canEdit, errorMessage } from "@/lib/api"
 import { describe, formatMs, fromLB } from "@/lib/builderModel"
+import { across, branch, down, flowOf, useMeasured, type FlowKind } from "@/lib/flow"
 import { humanize } from "@/lib/humanize"
 import { deleteLB, mapNodes, testNode, updateLB } from "@/lib/lbActions"
 import { useLBs } from "@/lib/lbs"
@@ -27,10 +28,9 @@ function nodeState(lb: LoadBalancer, b: BackendNode): NodeState {
   return activeNodes(lb).some((a) => a.id === b.id) ? "active" : "standby"
 }
 
-// --- Topology: blocks laid out with flex, connectors drawn in SVG from measured positions ---
+// --- Topology ---
 
-type Box = { l: number; t: number; r: number; b: number; cy: number }
-type Link = { d: string; style: "live" | "idle" | "down" | "off" }
+type Link = { d: string; style: FlowKind }
 type Geometry = { wide: boolean; links: Link[]; label?: { x: number; y: number; anchor: "middle" | "start" } }
 
 // Left to right when everything fits: clients 64 + listen 180 + rule 180 + nodes 240,
@@ -38,79 +38,7 @@ type Geometry = { wide: boolean; links: Link[]; label?: { x: number; y: number; 
 const WIDE_MIN = 884
 const TRUNK = 32 // stacked layout: x of the vertical line, the centre of the clients circle
 
-function boxOf(el: Element | null, origin: DOMRect): Box | null {
-  if (!el) return null
-  const r = el.getBoundingClientRect()
-  return { l: r.left - origin.left, t: r.top - origin.top, r: r.right - origin.left, b: r.bottom - origin.top, cy: (r.top + r.bottom) / 2 - origin.top }
-}
-
-// Horizontal link between two boxes in a row, curved when their centres differ
-function across(a: Box, b: Box) {
-  const mid = (a.r + b.l) / 2
-  return `M ${a.r} ${a.cy} C ${mid} ${a.cy}, ${mid} ${b.cy}, ${b.l} ${b.cy}`
-}
-
-const linkStroke: Record<Link["style"], string> = { live: "#2E4BFF", idle: "#4A5566", down: "#7A2E12", off: "#2A3340" }
-
-function useTopologyGeometry(edge: Link["style"], nodeStyles: Link["style"][]) {
-  const sectionRef = useRef<HTMLElement>(null)
-  const clientsRef = useRef<HTMLSpanElement>(null)
-  const listenRef = useRef<HTMLDivElement>(null)
-  const ruleRef = useRef<HTMLDivElement>(null)
-  const nodeRefs = useRef<(HTMLDivElement | null)[]>([])
-  const [geo, setGeo] = useState<Geometry>({ wide: true, links: [] })
-  const styles = useRef({ edge, nodeStyles })
-
-  const measure = useCallback(() => {
-    const section = sectionRef.current
-    if (!section) return
-    const origin = section.getBoundingClientRect()
-    const wide = section.clientWidth >= WIDE_MIN
-    const clients = boxOf(clientsRef.current, origin)
-    const listen = boxOf(listenRef.current, origin)
-    const rule = boxOf(ruleRef.current, origin)
-    const { edge, nodeStyles } = styles.current
-    const links: Link[] = []
-    let label: Geometry["label"]
-    if (clients && listen && rule) {
-      if (wide) {
-        links.push({ d: across(clients, listen), style: edge }, { d: across(listen, rule), style: edge })
-        label = { x: (clients.r + listen.l) / 2, y: clients.cy - 14, anchor: "middle" }
-      } else {
-        const x = clients.l + TRUNK
-        links.push({ d: `M ${x} ${clients.b} V ${listen.t}`, style: edge }, { d: `M ${x} ${listen.b} V ${rule.t}`, style: edge })
-        label = { x: x + 14, y: (clients.b + listen.t) / 2 + 4, anchor: "start" }
-      }
-      nodeRefs.current.forEach((el, i) => {
-        const node = boxOf(el, origin)
-        if (!node) return
-        const d = wide
-          ? across(rule, node)
-          : `M ${rule.l + TRUNK} ${rule.b} V ${node.cy - 14} Q ${rule.l + TRUNK} ${node.cy}, ${rule.l + TRUNK + 14} ${node.cy} H ${node.l}`
-        links.push({ d, style: nodeStyles[i] ?? "idle" })
-      })
-    }
-    const next: Geometry = { wide, links, label }
-    setGeo((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next))
-  }, [])
-
-  // After every render (data polls move things) and on any resize
-  useLayoutEffect(() => {
-    styles.current = { edge, nodeStyles }
-    measure()
-  })
-  const nodeCount = nodeStyles.length
-  useEffect(() => {
-    const section = sectionRef.current
-    if (!section) return
-    const ro = new ResizeObserver(() => measure())
-    ro.observe(section)
-    for (const el of [clientsRef.current, listenRef.current, ruleRef.current, ...nodeRefs.current]) if (el) ro.observe(el)
-    return () => ro.disconnect()
-  }, [measure, nodeCount])
-
-  return { geo, sectionRef, clientsRef, listenRef, ruleRef, nodeRefs }
-}
+const linkStroke: Record<FlowKind, string> = { live: "#2E4BFF", idle: "#4A5566", down: "#7A2E12", off: "#2A3340" }
 
 function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
   const kind = kindOf(lb)
@@ -125,8 +53,35 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
     off: { ring: "border-[3px] border-[#3A4555] text-rail-muted", label: "ВЫКЛ", card: "border border-dashed border-[#2A3340] bg-rail", text: "выведен из работы" },
   }
   const states = nodes.map((b) => nodeState(lb, b))
-  const linkStyle = (st: NodeState): Link["style"] => (st === "active" ? (live > 0 ? "live" : "idle") : st === "down" ? "down" : st === "off" ? "off" : "idle")
-  const { geo, sectionRef, clientsRef, listenRef, ruleRef, nodeRefs } = useTopologyGeometry(live > 0 ? "live" : "idle", states.map(linkStyle))
+  const flow = flowOf(lb, live)
+
+  const sectionRef = useRef<HTMLElement>(null)
+  const clientsRef = useRef<HTMLSpanElement>(null)
+  const listenRef = useRef<HTMLDivElement>(null)
+  const ruleRef = useRef<HTMLDivElement>(null)
+  const nodeRefs = useRef<(HTMLDivElement | null)[]>([])
+  const geo = useMeasured<Geometry>(
+    sectionRef,
+    (box, width) => {
+      const wide = width >= WIDE_MIN
+      const clients = box(clientsRef.current)
+      const listen = box(listenRef.current)
+      const rule = box(ruleRef.current)
+      if (!clients || !listen || !rule) return { wide, links: [] }
+      const edge: FlowKind = live > 0 ? "live" : "idle"
+      const x = clients.l + TRUNK
+      const links: Link[] = wide
+        ? [{ d: across(clients, listen), style: edge }, { d: across(listen, rule), style: edge }]
+        : [{ d: down(clients, x, listen), style: edge }, { d: down(listen, x, rule), style: edge }]
+      nodes.forEach((b, i) => {
+        const node = box(nodeRefs.current[i])
+        if (node) links.push({ d: wide ? across(rule, node) : branch(rule, rule.l + TRUNK, node), style: flow(b).kind })
+      })
+      const label = wide ? { x: (clients.r + listen.l) / 2, y: clients.cy - 14, anchor: "middle" as const } : { x: x + 14, y: (clients.b + listen.t) / 2 + 4, anchor: "start" as const }
+      return { wide, links, label }
+    },
+    { wide: true, links: [] },
+  )
 
   const { wide } = geo
   return (
@@ -152,13 +107,13 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
 
       <div className={`relative flex ${wide ? "items-center gap-0" : "flex-col items-stretch gap-12"}`}>
         <div className={`flex flex-none items-center ${wide ? "relative w-16 justify-center" : "gap-3"}`}>
-          <span ref={clientsRef} className="grid h-16 w-16 flex-none place-items-center rounded-full border border-[#2A3340] bg-rail">
+          <span ref={clientsRef} data-flow className="grid h-16 w-16 flex-none place-items-center rounded-full border border-[#2A3340] bg-rail">
             <Globe className="h-7 w-7 text-cobalt-light" aria-hidden="true" />
           </span>
           <span className={`text-[13px] text-[#A9B3C1] ${wide ? "absolute left-1/2 top-full mt-2 -translate-x-1/2" : ""}`}>Клиенты</span>
         </div>
         {wide && <div aria-hidden="true" className="min-w-[64px] flex-1" />}
-        <div ref={listenRef} className={`flex flex-none flex-col gap-2 rounded-2xl border bg-rail-2 p-4 ${wide ? "w-[180px]" : ""} ${failed ? "border-down" : "border-[#222B36]"}`}>
+        <div ref={listenRef} data-flow className={`flex flex-none flex-col gap-2 rounded-2xl border bg-rail-2 p-4 ${wide ? "w-[180px]" : ""} ${failed ? "border-down" : "border-[#222B36]"}`}>
           <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-rail-muted">Приём</span>
           <span className="break-all font-mono text-base text-white">{listenAddr(lb)}</span>
           <span className="text-[13px] text-[#C6CEDA]">{kindLabel[kind]}{lb.http3_enabled ? " · HTTP/3" : ""}</span>
@@ -171,7 +126,7 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
           {failed && <span className="text-[13px] text-[#FF9A6B]">не запущен</span>}
         </div>
         {wide && <div aria-hidden="true" className="min-w-[36px] flex-1" />}
-        <div ref={ruleRef} className={`flex flex-none flex-col gap-2 rounded-2xl border border-[#3A4DB8] bg-cobalt-deep p-4 ${wide ? "w-[180px]" : ""}`}>
+        <div ref={ruleRef} data-flow className={`flex flex-none flex-col gap-2 rounded-2xl border border-[#3A4DB8] bg-cobalt-deep p-4 ${wide ? "w-[180px]" : ""}`}>
           <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#A8B6FF]">Правило</span>
           <span className="text-base font-semibold text-white">{algorithmLabel[lb.algorithm] ?? lb.algorithm}</span>
           {nodes.some((b) => b.backup) && <span className="text-[13px] leading-snug text-[#C9D2FF]">резерв ждёт отказа основных</span>}
@@ -189,6 +144,7 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
                 ref={(el) => {
                   nodeRefs.current[i] = el
                 }}
+                data-flow
                 className={`flex min-w-0 items-center gap-3.5 rounded-2xl px-4 py-3.5 ${r.card}`}
               >
                 <span className={`grid h-11 w-11 flex-none place-items-center rounded-full font-mono text-[10px] ${r.ring}`}>{r.label}</span>

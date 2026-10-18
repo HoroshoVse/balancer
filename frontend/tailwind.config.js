@@ -71,15 +71,12 @@ export default {
         sm: "calc(var(--radius) - 4px)",
       },
       keyframes: {
-        flow: { from: { transform: "translateX(-28px)" }, to: { transform: "translateX(0)" } },
         led: {
           "0%, 100%": { boxShadow: "0 0 0 3px rgba(46,214,154,.18)" },
           "50%": { boxShadow: "0 0 0 6px rgba(46,214,154,.05)" },
         },
       },
       animation: {
-        flow: "flow 0.9s linear infinite",
-        "flow-slow": "flow 2.4s linear infinite",
         led: "led 2.4s ease-in-out infinite",
       },
     },

@@ -38,15 +38,32 @@
 }
 
 @layer utilities {
-  /* Moving dashes inside a traffic band */
-  .flow-dashes {
-    background: repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.75) 0 5px, transparent 5px 28px);
-  }
-
   /* The same dashes along an SVG path */
   .stream-dashes {
     stroke-dasharray: 6 26;
     animation: stream 1.2s linear infinite;
+  }
+
+  /* Requests running along a link as dots (round caps on zero-length dashes) */
+  .flow-packets {
+    stroke-dasharray: 0 18;
+    animation: packets 0.9s linear infinite;
+  }
+  .flow-packets-sparse {
+    stroke-dasharray: 0 30;
+    animation: packets-sparse 1.5s linear infinite;
+  }
+}
+
+@keyframes packets {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+
+@keyframes packets-sparse {
+  to {
+    stroke-dashoffset: -30;
   }
 }
 
@@ -57,10 +74,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-flow,
-  .animate-flow-slow,
   .animate-led,
-  .stream-dashes {
+  .stream-dashes,
+  .flow-packets,
+  .flow-packets-sparse {
     animation: none;
   }
 }
