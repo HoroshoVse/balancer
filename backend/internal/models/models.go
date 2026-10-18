@@ -122,6 +122,8 @@ type User struct {
 	Username string `gorm:"uniqueIndex" json:"username"`
 	Password string `json:"-"`
 	Role     string `json:"role"` // Admin, Operator, Viewer
+	// Bumped on every password change; tokens carrying an older value are rejected
+	TokenVersion uint `json:"-" gorm:"not null;default:0"`
 }
 
 type Settings struct {

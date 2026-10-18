@@ -1,7 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { toast } from "sonner"
-import { Check, Copy, TriangleAlert, X } from "lucide-react"
-import { api, errorMessage, isAdmin, tokenClaims } from "@/lib/api"
+import { Check, Copy, Eye, EyeOff, TriangleAlert, X } from "lucide-react"
+import { ApiError, api, errorMessage, isAdmin, setToken, tokenClaims } from "@/lib/api"
 import { roleLabel } from "@/lib/lbModel"
 import { usePoll } from "@/lib/usePoll"
 import { Switch } from "@/components/Switch"
@@ -140,7 +140,124 @@ function Telegram() {
   )
 }
 
-function Access() {
+// Same limits as the server: at least 8 characters, at most 72 bytes (bcrypt's limit)
+const MIN_PASSWORD_CHARS = 8
+const MAX_PASSWORD_BYTES = 72
+
+function passwordProblem(current: string, next: string, repeat: string) {
+  if ([...next].length < MIN_PASSWORD_CHARS) return `Новый пароль должен быть не короче ${MIN_PASSWORD_CHARS} символов.`
+  if (new TextEncoder().encode(next).length > MAX_PASSWORD_BYTES) return "Новый пароль слишком длинный: до 72 латинских букв или до 36 русских."
+  if (next === current) return "Новый пароль совпадает с текущим."
+  if (next !== repeat) return "Новые пароли не совпадают."
+  return ""
+}
+
+function passwordError(err: unknown) {
+  if (err instanceof ApiError) {
+    if (err.status === 403) return "Текущий пароль указан неверно."
+    if (err.status === 429) return "Слишком много неверных попыток. Смена пароля и вход с этого адреса закрыты на 15 минут."
+    if (err.status === 400) return `Сервер не принял новый пароль: нужно не короче ${MIN_PASSWORD_CHARS} символов, и он должен отличаться от текущего.`
+    if (err.status >= 500) return "Сервер не ответил. Попробуйте ещё раз."
+  }
+  if (err instanceof TypeError) return "Нет связи с сервером."
+  return errorMessage(err)
+}
+
+function PasswordField({ label, hint, value, onChange, autoComplete }: { label: string; hint?: string; value: string; onChange: (v: string) => void; autoComplete: string }) {
+  const [show, setShow] = useState(false)
+  return (
+    <label className="flex flex-col gap-1.5 text-sm font-medium">
+      {label}
+      <span className="relative">
+        <input
+          type={show ? "text" : "password"}
+          autoComplete={autoComplete}
+          required
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className={`${fieldClass} w-full pr-12`}
+        />
+        <button
+          type="button"
+          onClick={() => setShow((s) => !s)}
+          aria-label={show ? "Скрыть пароль" : "Показать пароль"}
+          aria-pressed={show}
+          className="absolute right-1 top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-lg text-ink-3 hover:text-ink"
+        >
+          {show ? <EyeOff className="h-5 w-5" aria-hidden="true" /> : <Eye className="h-5 w-5" aria-hidden="true" />}
+        </button>
+      </span>
+      {hint && <span className="text-[13px] font-normal text-ink-3">{hint}</span>}
+    </label>
+  )
+}
+
+function ChangePassword({ onChanged }: { onChanged: () => void }) {
+  const username = tokenClaims()?.username ?? ""
+  const [current, setCurrent] = useState("")
+  const [next, setNext] = useState("")
+  const [repeat, setRepeat] = useState("")
+  const [error, setError] = useState("")
+  const [saving, setSaving] = useState(false)
+
+  const edit = (set: (v: string) => void) => (v: string) => {
+    set(v)
+    setError("")
+  }
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    const problem = passwordProblem(current, next, repeat)
+    if (problem) {
+      setError(problem)
+      return
+    }
+    setSaving(true)
+    setError("")
+    try {
+      // The old token stops working, so continue with the one the server returns
+      const data = await api<{ token: string }>("/auth/password", { method: "POST", json: { current_password: current, new_password: next } })
+      setToken(data.token)
+      setCurrent("")
+      setNext("")
+      setRepeat("")
+      toast.success("Пароль изменён. Другие сеансы этого пользователя завершены.")
+      onChanged()
+    } catch (err) {
+      setError(passwordError(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form id="password" onSubmit={submit} noValidate aria-labelledby="password-title" className="flex scroll-mt-6 flex-col gap-4 border-t border-ground pt-5">
+      <div className="flex flex-col gap-1">
+        <h3 id="password-title" className="text-base font-semibold">Сменить пароль</h3>
+        <span className="text-sm text-ink-3">
+          Для пользователя <b className="font-medium text-ink-2">{username}</b>. Остальные его сеансы завершатся, в этом браузере вы останетесь в системе.
+        </span>
+      </div>
+      {/* Lets password managers attach the new password to the right account */}
+      <input type="text" name="username" autoComplete="username" value={username} readOnly hidden />
+      <div className="flex max-w-[420px] flex-col gap-4">
+        <PasswordField label="Текущий пароль" value={current} onChange={edit(setCurrent)} autoComplete="current-password" />
+        <PasswordField label="Новый пароль" hint={`Не короче ${MIN_PASSWORD_CHARS} символов.`} value={next} onChange={edit(setNext)} autoComplete="new-password" />
+        <PasswordField label="Новый пароль ещё раз" value={repeat} onChange={edit(setRepeat)} autoComplete="new-password" />
+      </div>
+      {error && (
+        <p role="alert" className="max-w-[420px] rounded-xl bg-down-soft px-4 py-3 text-sm text-down-text">
+          {error}
+        </p>
+      )}
+      <button type="submit" disabled={saving || !current || !next || !repeat} className="h-11 self-start rounded-[10px] bg-cobalt px-[18px] text-[15px] font-semibold text-white hover:bg-cobalt-dark disabled:opacity-60">
+        {saving ? "Меняю…" : "Сменить пароль"}
+      </button>
+    </form>
+  )
+}
+
+function Access({ onPasswordChanged }: { onPasswordChanged: () => void }) {
   const role = tokenClaims()?.role ?? ""
   const roles = [
     { key: "Admin", text: "Всё, включая эти настройки и уведомления." },
@@ -159,7 +276,8 @@ function Access() {
           </div>
         ))}
       </div>
-      <div className="flex flex-col gap-2">
+      <ChangePassword onChanged={onPasswordChanged} />
+      <div className="flex flex-col gap-2 border-t border-ground pt-5">
         <span className="text-sm text-ink-2">Пользователей добавляют и меняют на сервере:</span>
         <CopyCommand command="docker compose exec backend ./balancer-cli users add имя пароль Operator" />
         <span className="text-[13px] text-ink-3">Ещё есть команды users list, passwd, role и delete.</span>
@@ -180,7 +298,16 @@ function Security({ info }: { info: SystemInfo | null }) {
     {
       ok: !info.default_admin_password,
       title: info.default_admin_password ? "У admin стандартный пароль «admin»" : "Пароль admin не стандартный",
-      detail: info.default_admin_password ? <CopyCommand command="docker compose exec backend ./balancer-cli users passwd admin новый-пароль" /> : undefined,
+      detail: info.default_admin_password ? (
+        <span className="flex flex-col gap-2">
+          {tokenClaims()?.username === "admin" && (
+            <span>
+              Смените его в разделе <a href="#password" className="font-medium underline underline-offset-2">«Доступ»</a> или на сервере:
+            </span>
+          )}
+          <CopyCommand command="docker compose exec backend ./balancer-cli users passwd admin новый-пароль" />
+        </span>
+      ) : undefined,
     },
     { ok: true, title: "Перебор паролей блокируется", detail: `${info.login_max_failures} попыток · ${info.login_lockout_minutes} мин` },
   ]
@@ -237,7 +364,9 @@ function About({ info }: { info: SystemInfo | null }) {
 
 export function Settings() {
   const admin = isAdmin()
-  const info = usePoll(() => (admin ? api<SystemInfo>("/system") : Promise.resolve(null)), null as SystemInfo | null, "system", 30000)
+  // Bumped after a password change so the security checklist refreshes at once
+  const [systemKey, setSystemKey] = useState(0)
+  const info = usePoll(() => (admin ? api<SystemInfo>("/system") : Promise.resolve(null)), null as SystemInfo | null, `system-${systemKey}`, 30000)
   const insecure = info ? Number(!info.api_loopback) + Number(info.default_admin_password) : 0
 
   return (
@@ -259,7 +388,7 @@ export function Settings() {
             <p className="rounded-[14px] bg-ground px-5 py-4 text-ink-2">Уведомления и сведения о системе видят только администраторы.</p>
           )}
           {admin && <Telegram />}
-          <Access />
+          <Access onPasswordChanged={() => setSystemKey((k) => k + 1)} />
           {admin && <Security info={info} />}
           {admin && <About info={info} />}
         </div>

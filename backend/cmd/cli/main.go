@@ -109,10 +109,14 @@ func main() {
 			user := findUser(database, os.Args[3])
 
 			hashed, _ := bcrypt.GenerateFromPassword([]byte(os.Args[4]), bcrypt.DefaultCost)
-			if err := database.Model(&user).Update("password", string(hashed)).Error; err != nil {
+			// Bumping the token version signs the user out everywhere
+			if err := database.Model(&user).Updates(map[string]interface{}{
+				"password":      string(hashed),
+				"token_version": gorm.Expr("token_version + 1"),
+			}).Error; err != nil {
 				log.Fatalf("Failed to update password: %v", err)
 			}
-			fmt.Printf("Password for '%s' updated successfully.\n", user.Username)
+			fmt.Printf("Password for '%s' updated; their open sessions are signed out.\n", user.Username)
 
 		case "role":
 			if len(os.Args) < 5 {

@@ -255,3 +255,127 @@ func TestValidationAndPortConflicts(t *testing.T) {
 		t.Fatalf("udp on the same port number should be allowed: %d %s", rec.Code, rec.Body)
 	}
 }
+
+func changePassword(current, next string) ChangePasswordRequest {
+	return ChangePasswordRequest{CurrentPassword: current, NewPassword: next}
+}
+
+func TestChangePassword(t *testing.T) {
+	env := newTestEnv(t)
+	viewer := env.tokens[models.RoleViewer]
+
+	// Another session of the same user, e.g. a second browser
+	otherSession := env.login("viewer", "pw-Viewer")
+
+	rec := env.do(http.MethodPost, "/api/v1/auth/password", viewer, changePassword("pw-Viewer", "new-viewer-pw"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("change: %d %s", rec.Code, rec.Body)
+	}
+	var resp LoginResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Token == "" {
+		t.Fatal("no new token in the response")
+	}
+
+	// The caller continues with the new token; every older token is revoked
+	if rec := env.do(http.MethodGet, "/api/v1/auth/me", resp.Token, nil); rec.Code != http.StatusOK {
+		t.Fatalf("new token: %d", rec.Code)
+	}
+	for name, token := range map[string]string{"caller's old token": viewer, "other session": otherSession} {
+		if rec := env.do(http.MethodGet, "/api/v1/auth/me", token, nil); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s after password change: %d", name, rec.Code)
+		}
+	}
+
+	if rec := env.do(http.MethodPost, "/api/v1/auth/login", "", LoginRequest{"viewer", "pw-Viewer"}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("login with the old password: %d", rec.Code)
+	}
+	env.login("viewer", "new-viewer-pw")
+
+	// Other users' tokens are untouched
+	if rec := env.do(http.MethodGet, "/api/v1/auth/me", env.tokens[models.RoleAdmin], nil); rec.Code != http.StatusOK {
+		t.Fatalf("admin token after viewer's change: %d", rec.Code)
+	}
+}
+
+func TestChangePasswordValidation(t *testing.T) {
+	env := newTestEnv(t)
+	operator := env.tokens[models.RoleOperator]
+
+	if rec := env.do(http.MethodPost, "/api/v1/auth/password", "", changePassword("pw-Operator", "long-enough-pw")); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated: %d", rec.Code)
+	}
+	if rec := env.do(http.MethodGet, "/api/v1/auth/password", operator, nil); rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET: %d", rec.Code)
+	}
+
+	for name, req := range map[string]ChangePasswordRequest{
+		"too short":            changePassword("pw-Operator", "short12"),
+		"too short (runes)":    changePassword("pw-Operator", "пароль7"),
+		"too long":             changePassword("pw-Operator", strings.Repeat("x", maxPasswordBytes+1)),
+		"same as current":      changePassword("pw-Operator", "pw-Operator"),
+		"short, wrong current": changePassword("wrong", "short"),
+	} {
+		if rec := env.do(http.MethodPost, "/api/v1/auth/password", operator, req); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+
+	// Nothing changed: the old password and token still work
+	if rec := env.do(http.MethodGet, "/api/v1/auth/me", operator, nil); rec.Code != http.StatusOK {
+		t.Fatalf("token after rejected changes: %d", rec.Code)
+	}
+	env.login("operator", "pw-Operator")
+}
+
+func TestChangePasswordLockout(t *testing.T) {
+	env := newTestEnv(t)
+	viewer := env.tokens[models.RoleViewer]
+
+	for i := 0; i < maxLoginFailures; i++ {
+		// 403 rather than 401, so the UI doesn't sign the user out over a typo
+		if rec := env.do(http.MethodPost, "/api/v1/auth/password", viewer, changePassword("wrong", "long-enough-pw")); rec.Code != http.StatusForbidden {
+			t.Fatalf("attempt %d: %d %s", i, rec.Code, rec.Body)
+		}
+	}
+	// Locked out even with the right current password, and the session survives
+	if rec := env.do(http.MethodPost, "/api/v1/auth/password", viewer, changePassword("pw-Viewer", "long-enough-pw")); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", rec.Code)
+	}
+	if rec := env.do(http.MethodGet, "/api/v1/auth/me", viewer, nil); rec.Code != http.StatusOK {
+		t.Fatalf("session after lockout: %d", rec.Code)
+	}
+	// The failures count toward the login lockout of the same IP
+	if rec := env.do(http.MethodPost, "/api/v1/auth/login", "", LoginRequest{"admin", "admin-test-password"}); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("login from the same IP: expected 429, got %d", rec.Code)
+	}
+
+	// ...and to the account itself, whatever IP the token is used from
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/password", strings.NewReader(`{"current_password":"pw-Viewer","new_password":"long-enough-pw"}`))
+	req.RemoteAddr = "198.51.100.7:4242"
+	req.Header.Set("Authorization", "Bearer "+viewer)
+	rec := httptest.NewRecorder()
+	env.server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("same account from another IP: expected 429, got %d", rec.Code)
+	}
+
+	var user models.User
+	env.db.Where("username = ?", "viewer").First(&user)
+	if bcrypt.CompareHashAndPassword([]byte(user.Password), []byte("pw-Viewer")) != nil {
+		t.Fatal("password changed despite the lockout")
+	}
+}
+
+func TestTokensWithoutVersionStillWork(t *testing.T) {
+	env := newTestEnv(t)
+	var admin models.User
+	env.db.Where("username = ?", "admin").First(&admin)
+
+	// Tokens issued before token_version existed must survive the upgrade
+	legacy := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"user_id": admin.ID, "username": "admin", "role": "Admin", "exp": time.Now().Add(time.Hour).Unix()})
+	token, _ := legacy.SignedString([]byte("0123456789abcdef0123456789abcdef"))
+	if rec := env.do(http.MethodGet, "/api/v1/auth/me", token, nil); rec.Code != http.StatusOK {
+		t.Fatalf("legacy token: %d", rec.Code)
+	}
+}

@@ -59,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Protected Routes
 	mux.HandleFunc("/api/v1/auth/me", s.authed(models.RoleViewer, s.me))
+	mux.HandleFunc("/api/v1/auth/password", s.authed(models.RoleViewer, s.changePassword))
 	mux.HandleFunc("/api/v1/load-balancers", s.authed(models.RoleViewer, s.handleLoadBalancers))
 	mux.HandleFunc("/api/v1/load-balancers/update", s.authed(models.RoleOperator, s.updateLoadBalancer))
 	mux.HandleFunc("/api/v1/load-balancers/delete", s.authed(models.RoleOperator, s.deleteLoadBalancer))
