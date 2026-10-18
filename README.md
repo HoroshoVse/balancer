@@ -4,26 +4,26 @@ Balancer — это современный, высокопроизводител
 
 ## Основные возможности
 
-- **TCP/UDP & HTTP балансировка:** Поддержка всех основных сетевых протоколов, включая HTTP/3 (QUIC).
-- **Продвинутая маршрутизация:** `Round Robin`, `Least Connections`, `Weighted Round Robin` и `IP Hash`.
+- **TCP/UDP & HTTP балансировка:** Поддержка всех основных сетевых протоколов, включая HTTP/3 (QUIC) и TLS passthrough.
+- **Продвинутая маршрутизация:** `Round Robin`, `Weighted Round Robin`, `Least Connections`, `IP Hash` и `Failover` (active-passive), ограничение соединений на узел (`max_conns`), резервные (backup) узлы.
+- **Sticky Sessions:** по IP клиента (любой протокол) или по cookie (HTTP/HTTPS).
+- **Health checks:** HTTP/HTTPS/TCP/UDP, свои интервал, таймаут и пороги срабатывания для каждого узла.
 - **Auto SSL (Let's Encrypt):** Автоматический выпуск и продление SSL-сертификатов (ACME).
+- **Таймауты и переадресация:** таймаут подключения к узлу, простоя соединения и ответа узла; переадресация HTTP (порт 80) на HTTPS с обработкой проверок Let's Encrypt HTTP-01.
 - **Prometheus Metrics:** Встроенный сбор метрик по адресу `/metrics` (RPS, Задержка, Ошибки).
 - **Telegram Уведомления:** Оповещения в Telegram в реальном времени при падении или восстановлении серверов (настраивается в UI).
 - **Поддержка PROXY Protocol (v1/v2):** Прозрачная передача реальных IP-адресов клиентов на бекенды.
-- **Инжект HTTP Заголовков:** Автоматическая установка `X-Real-IP` и `X-Forwarded-For`.
-- **Аутентификация & CLI:** Встроенный инструмент командной строки для безопасного управления пользователями и JWT защита API.
+- **Инжект HTTP Заголовков:** Автоматическая установка `X-Real-IP`, `X-Forwarded-For` и `X-Forwarded-Proto`.
+- **Аутентификация & роли:** JWT, роли `Admin` / `Operator` / `Viewer`, защита от перебора паролей, CLI для управления пользователями.
 
 ---
 
-
+## Установка
 
 ### Шаг 1. Скачивание конфигурации
 ```bash
 git clone https://github.com/HoroshoVse/balancer.git
 cd balancer
-```
-
-
 ```
 
 ### Шаг 2. Запуск балансировщика
@@ -35,15 +35,56 @@ docker compose up -d
 
 ### Шаг 3. Доступ к интерфейсу
 Откройте в браузере: `http://<IP_вашего_сервера>:3000`
-По умолчанию для входа используйте:
-- Логин: `admin`
-- Пароль: `admin`
+
+При первом запуске создаётся пользователь `admin` со случайным паролем. Пароль выводится один раз в лог бэкенда:
+```bash
+docker compose logs backend | grep "generated password"
+```
+
+> API бэкенда слушает только `127.0.0.1:8080`, интерфейс обращается к нему через nginx фронтенда (`/api`). Наружу открыт только порт интерфейса `3000` и порты ваших балансировщиков. Интерфейс лучше дополнительно закрыть файрволом или VPN, если он не должен быть доступен из интернета.
+
+### Переменные окружения (опционально)
+Задаются в `docker-compose.yml`.
+
+Бэкенд:
+- `JWT_SECRET` — секрет подписи токенов (не короче 32 символов). Если не задан, генерируется случайный и сохраняется в БД.
+- `ADMIN_PASSWORD` — пароль пользователя `admin` при первом запуске (когда в БД ещё нет пользователей).
+- `API_ADDR` — адрес API (по умолчанию `127.0.0.1:8080`). `0.0.0.0:8080` откроет API наружу, например для Prometheus с другого хоста.
+- `DB_DSN` — `postgres://...` для PostgreSQL или `sqlite:///app/data/balancer.db` для SQLite.
+
+Фронтенд:
+- `NGINX_PORT` — порт интерфейса (по умолчанию `3000`).
+- `API_UPSTREAM` — куда nginx проксирует `/api` (по умолчанию `127.0.0.1:8080`).
+
+### Обновление со старых версий
+- Обновите `docker-compose.yml` (`git pull`): фронтенд теперь работает в `network_mode: host` и проксирует API, а бэкенд больше не открывает порт `8080` наружу.
+- Если у вас остался пароль `admin/admin`, смените его: `docker compose exec backend ./balancer-cli users passwd admin <new_password>`. Пока пароль не сменён, бэкенд пишет предупреждение в лог.
+- После обновления все пользователи один раз перелогиниваются (сменился секрет токенов).
+- HTTPS-балансировщики раньше всегда ходили к узлам по HTTPS. Теперь это решает флаг узла «HTTPS», а для существующих HTTPS-балансировщиков он выставлен автоматически при миграции.
+
+---
+
+## DNS: AdGuard Home, Pi-hole и другие
+
+- **Обычный DNS (порт 53).** Создайте балансировщик с протоколом UDP и включите галочку **«DNS server»**:
+  - запросы идут через несколько постоянных сокетов к каждому узлу, ответ возвращается клиенту по DNS ID (нет сокета на каждый запрос, порты не заканчиваются под нагрузкой);
+  - на том же порту работает TCP (клиенты переходят на него, если ответ не помещается в UDP);
+  - узлы проверяются настоящим DNS-запросом (тип проверки «DNS query»). В поле «Query name» можно указать локальный домен (например, DNS rewrite в AdGuard), тогда проверка не зависит от upstream-серверов.
+- **DoH.** HTTPS-балансировщик с терминацией SSL. Узлы: AdGuard `:443` с галочкой «HTTPS» или порт веб-интерфейса AdGuard без TLS, если в AdGuard включено `http.doh.insecure_enabled: true`. Для проверки узлов используйте HTTPS-путь `/` или «DNS query» на порт 53 (поле «Port» у проверки).
+- **DoT.** TCP-балансировщик на `853`, TLS проходит до узлов как есть.
+
+Настройки на стороне AdGuard Home:
+- `dns.ratelimit` (по умолчанию 20 запросов/с на клиента). За балансировщиком все клиенты выглядят для AdGuard одним IP, и лимит становится общим на всех. Поставьте `ratelimit: 0` или добавьте IP балансировщика в `ratelimit_whitelist`.
+- Реальный IP клиента для DoH: добавьте IP (подсеть) балансировщика в `dns.trusted_proxies`, AdGuard возьмёт адрес из `X-Real-IP` / `X-Forwarded-For`. Для обычного DNS и DoT AdGuard видит IP балансировщика.
+- PROXY protocol AdGuard Home не поддерживает (проверено на v0.107.79), не включайте его для узлов AdGuard.
 
 ---
 
 ## 🛠 Управление пользователями (CLI)
 
 В состав бэкенда входит встроенная утилита командной строки `balancer-cli`. Для работы с ней выполняйте команды внутри запущенного Docker-контейнера.
+
+Роли: `Admin` — всё, включая настройки; `Operator` — управление балансировщиками; `Viewer` — только просмотр.
 
 **Просмотр списка всех пользователей:**
 ```bash
@@ -53,7 +94,6 @@ docker compose exec backend ./balancer-cli users list
 **Добавление нового пользователя:**
 ```bash
 docker compose exec backend ./balancer-cli users add <username> <password> [role]
-
 ```
 
 **Смена пароля:**
@@ -61,9 +101,29 @@ docker compose exec backend ./balancer-cli users add <username> <password> [role
 docker compose exec backend ./balancer-cli users passwd <username> <new_password>
 ```
 
+**Смена роли и удаление:**
+```bash
+docker compose exec backend ./balancer-cli users role <username> <role>
+docker compose exec backend ./balancer-cli users delete <username>
+```
+
 ---
 
+## Разработка
+
+```bash
+# Backend (нужен Go 1.22+); без DB_DSN используется локальный PostgreSQL
+cd backend && DB_DSN=sqlite://balancer.db go run ./cmd/server
+
+# Frontend: Vite проксирует /api на 127.0.0.1:8080
+cd frontend && npm ci && npm run dev
+
+# Проверки, которые запускает CI
+cd backend && go vet ./... && go test ./...
+cd frontend && npm run lint && npm run build
+```
+
 ## Технический стек
-- **Backend:** Go (1.22), PostgreSQL, Prometheus client, Certmagic (AutoSSL).
-- **Frontend:** React (20), TypeScript, Tailwind CSS, Shadcn/ui, Recharts.
-- **CI/CD:** GitHub Actions (авто-сборка и пуш в GHCR).
+- **Backend:** Go (1.22), PostgreSQL или SQLite, Prometheus client, Certmagic (AutoSSL), quic-go (HTTP/3).
+- **Frontend:** React (19), TypeScript, Tailwind CSS, Shadcn/ui, Recharts, Vite.
+- **CI/CD:** GitHub Actions (vet, тесты, линтер, сборка и пуш образов в GHCR с тегами `latest` и SHA коммита).

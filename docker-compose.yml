@@ -8,7 +8,12 @@ services:
     environment:
       # Connect to the database via localhost because network_mode: host bypasses Docker DNS
       - DB_DSN=postgres://balancer:balancer@127.0.0.1:54432/balancer?sslmode=disable
-      - DEV_MODE=false
+      # The API stays on loopback; the frontend's nginx proxies /api to it
+      - API_ADDR=127.0.0.1:8080
+      # Optional: JWT signing secret (at least 32 chars). If unset, a random one is generated and stored in the DB.
+      # - JWT_SECRET=
+      # Optional: initial admin password, used only on first start. If unset, a random one is printed to the logs.
+      # - ADMIN_PASSWORD=
     depends_on:
       - db
     restart: unless-stopped
@@ -27,8 +32,11 @@ services:
 
   frontend:
     image: ghcr.io/horoshovse/balancer-frontend:latest
-    ports:
-      - "3000:80"
+    # Host network so nginx can reach the loopback-only API
+    network_mode: "host"
+    environment:
+      - NGINX_PORT=3000
+      - API_UPSTREAM=127.0.0.1:8080
     restart: unless-stopped
 
 volumes:

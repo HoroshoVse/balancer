@@ -1,0 +1,16 @@
+# Build outputs
+/backend/main
+/backend/balancer
+/backend/balancer-cli
+
+# Local data and certificates (mounted into the containers)
+*.db
+/backend/data/
+/backend/certs/
+
+# Editor / OS / patch leftovers
+.DS_Store
+.idea/
+.vscode/
+*.orig
+*.rej
