@@ -10,4 +10,10 @@ export default defineConfig({
       "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
+  server: {
+    // Same-origin API in development, like nginx does in production
+    proxy: {
+      "/api": process.env.API_UPSTREAM ?? "http://127.0.0.1:8080",
+    },
+  },
 })

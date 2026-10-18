@@ -1,137 +1,361 @@
-import { useState, useEffect } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Activity, Server, ArrowUpRight, ArrowDownRight } from "lucide-react"
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { Link } from "react-router-dom"
+import { Check, Globe, Plus, ShieldCheck, Terminal, TriangleAlert } from "lucide-react"
+import { api, canEdit } from "@/lib/api"
+import { humanize, type EventKind } from "@/lib/humanize"
+import { useLBs } from "@/lib/lbs"
+import { activeNodes, algorithmLabel, formatNumber, kindLabel, kindOf, lbHealth, listenAddr, plural } from "@/lib/lbModel"
+import { recipeList } from "@/lib/recipes"
+import { usePoll } from "@/lib/usePoll"
+import { Bars } from "@/components/Bars"
+import type { BackendNode, LoadBalancer, LogEntry, MetricsSnapshot } from "@/types"
 
+function Readout({ label, value, unit, children, last }: { label: string; value: string; unit: string; children: React.ReactNode; last?: boolean }) {
+  return (
+    <div className={`flex min-w-[200px] flex-1 flex-col gap-3 px-6 py-5 ${last ? "" : "border-b border-line-soft sm:border-b-0 sm:border-r"}`}>
+      <span className="text-[13px] text-ink-3">{label}</span>
+      <span className="flex items-baseline gap-2">
+        <span className="font-display text-[40px] font-semibold leading-none tracking-tight">{value}</span>
+        <span className="text-sm text-ink-3">{unit}</span>
+      </span>
+      {children}
+    </div>
+  )
+}
+
+// --- Flow ---
+
+function Band({ thickness, slow }: { thickness: number; slow?: boolean }) {
+  if (thickness <= 0) return <div aria-hidden="true" className="min-w-10 flex-1 border-t-2 border-dashed border-line-strong" />
+  return (
+    <div aria-hidden="true" className="relative min-w-10 flex-1 overflow-hidden rounded-full bg-cobalt" style={{ height: thickness }}>
+      <div className={`flow-dashes absolute inset-y-0 left-0 right-[-28px] ${slow ? "animate-flow-slow" : "animate-flow"}`} />
+    </div>
+  )
+}
+
+type NodeView = { node: BackendNode; state: "active" | "standby" | "down" | "off" }
+
+function nodeViews(lb: LoadBalancer): NodeView[] {
+  const active = new Set(activeNodes(lb).map((b) => b.id))
+  const order = { active: 0, standby: 1, down: 2, off: 3 }
+  return (lb.backend_group?.backends ?? [])
+    .map((node): NodeView => ({
+      node,
+      state: !node.enabled ? "off" : node.status === "DOWN" ? "down" : active.has(node.id) ? "active" : "standby",
+    }))
+    .sort((a, b) => order[a.state] - order[b.state])
+}
+
+function NodeChip({ view }: { view: NodeView }) {
+  const { node, state } = view
+  const addr = `${node.address}:${node.port}`
+  const styles = {
+    active: { box: "border border-line bg-white", dot: "bg-ok", role: node.backup ? "резерв в работе" : "основной", meta: `${addr} · ${formatNumber(node.metrics?.avg_latency_ms ?? 0, 1)} мс` },
+    standby: { box: "border border-dashed border-[#B7C0CC] bg-white", dot: "border-2 border-ok", role: "резерв", meta: `${addr} · ждёт` },
+    down: { box: "border border-down/40 bg-down-soft", dot: "bg-down", role: "не отвечает", meta: addr },
+    off: { box: "border border-dashed border-line-strong bg-accent", dot: "bg-line-strong", role: "выключен", meta: addr },
+  }[state]
+  return (
+    <div className={`flex w-[230px] flex-none flex-col gap-0.5 rounded-xl px-3.5 py-2.5 ${styles.box}`}>
+      <span className="flex items-center gap-2 text-sm font-semibold">
+        <span className={`box-border h-2 w-2 flex-none rounded-full ${styles.dot}`} />
+        <span className="truncate">{node.name || node.address}</span>
+        <span className="truncate font-normal text-ink-3">{styles.role}</span>
+      </span>
+      <span className="truncate font-mono text-xs text-ink-2">{styles.meta}</span>
+    </div>
+  )
+}
+
+function FlowRow({ lb, rps, maxRps }: { lb: LoadBalancer; rps: number; maxRps: number }) {
+  const kind = kindOf(lb)
+  const failed = lb.status === "error"
+  const thickness = rps > 0 && !failed ? Math.round(4 + 18 * (rps / maxRps)) : 0
+  const views = nodeViews(lb)
+  const activeCount = views.filter((v) => v.state === "active").length
+  const domain = (lb.acme_domains || "").split(",")[0]?.trim()
+  return (
+    <div className="flex flex-wrap items-center gap-y-3">
+      <div className="flex w-[150px] flex-none flex-col gap-1">
+        <span className="inline-flex items-center gap-2 text-[15px] font-semibold">
+          <Globe className="h-[18px] w-[18px] text-ink-2" aria-hidden="true" />
+          Клиенты
+        </span>
+        <span className="font-mono text-xs text-ink-3">{rps > 0 ? `${formatNumber(rps, rps < 10 ? 1 : 0)} запр/с` : "нет трафика"}</span>
+      </div>
+      <Band thickness={thickness} slow={thickness < 8} />
+      <Link
+        to={`/lbs/${lb.id}`}
+        title={lb.status_error || undefined}
+        className={`flex w-[250px] flex-none flex-col gap-1.5 rounded-[14px] bg-rail px-4 py-3.5 text-rail-text ${failed ? "ring-2 ring-down" : ""}`}
+      >
+        <span className="flex items-center justify-between gap-2">
+          <span className="truncate text-base font-semibold text-white">{lb.name}</span>
+          <span className="flex-none rounded-md bg-rail-4 px-1.5 py-0.5 font-mono text-[11px] text-[#C6CEDA]">{kindLabel[kind]}</span>
+        </span>
+        <span className="truncate font-mono text-xs text-[#A9B3C1]">
+          {listenAddr(lb)}
+          {kind === "https_term" && domain ? ` · ${domain}` : ""}
+        </span>
+        <span className={`text-xs ${failed ? "text-[#FF9A6B]" : "text-cobalt-light"}`}>{failed ? "не запущен — подробности внутри" : algorithmLabel[lb.algorithm] ?? lb.algorithm}</span>
+      </Link>
+      <div className="flex min-w-[300px] flex-[1_1_340px] flex-col gap-3.5">
+        {views.length === 0 && <span className="pl-4 text-sm text-ink-3">узлов нет</span>}
+        {views.map((v) => (
+          <div key={v.node.id ?? v.node.address} className="flex items-center">
+            {v.state === "active" && thickness > 0 ? (
+              <Band thickness={Math.max(3, Math.round(thickness / Math.max(activeCount, 1)))} slow={thickness < 8} />
+            ) : (
+              <div aria-hidden="true" className={`min-w-10 flex-1 border-t-2 border-dashed ${v.state === "down" ? "border-down/60" : "border-[#8B95A4]"}`} />
+            )}
+            <NodeChip view={v} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// --- Seismograph ---
+
+function Seismograph({ lb, history }: { lb: LoadBalancer; history: MetricsSnapshot[] }) {
+  const ticks = history.slice(-60)
+  const maxRps = Math.max(...ticks.map((t) => t.rps), 0)
+  const lats = ticks.map((t) => t.avg_latency_ms).filter((v) => v > 0).sort((a, b) => a - b)
+  const median = lats.length ? lats[Math.floor(lats.length / 2)] : 0
+  const isSlow = (t: MetricsSnapshot) => median > 0 && t.avg_latency_ms > Math.max(median * 3, median + 50)
+  const errors = ticks.filter((t) => t.error_rate > 0).length
+  const slow = ticks.filter((t) => t.error_rate === 0 && isSlow(t)).length
+  const pad = Array.from({ length: Math.max(0, 60 - ticks.length) })
+  const summary = errors
+    ? `${errors} ${plural(errors, "отрезок", "отрезка", "отрезков")} с ошибками`
+    : slow
+      ? `${slow} ${plural(slow, "медленный", "медленных", "медленных")}`
+      : maxRps > 0
+        ? "без ошибок"
+        : "нет трафика"
+  return (
+    <div className="flex flex-wrap items-center gap-4">
+      <Link to={`/lbs/${lb.id}`} className="w-24 flex-none truncate text-sm font-semibold text-ink hover:text-cobalt">{lb.name}</Link>
+      <div aria-hidden="true" className="flex h-11 min-w-0 flex-[1_1_300px] items-center gap-[3px] overflow-hidden">
+        {pad.map((_, i) => <div key={`p${i}`} className="h-2 flex-[1_0_3px] rounded-sm bg-line" />)}
+        {ticks.map((t, i) => (
+          <div
+            key={t.ts || i}
+            className={`flex-[1_0_3px] rounded-sm ${t.error_rate > 0 ? "bg-down" : isSlow(t) ? "bg-warn" : t.rps > 0 ? "bg-ok" : "bg-line-strong"}`}
+            style={{ height: maxRps > 0 ? Math.round(8 + (t.rps / maxRps) * 36) : 8 }}
+          />
+        ))}
+      </div>
+      <span className={`w-36 flex-none text-[13px] ${errors ? "text-down-text" : "text-ink-2"}`}>{summary}</span>
+    </div>
+  )
+}
+
+// --- Events ---
+
+const eventStyle: Record<EventKind, { box: string; icon: React.ReactNode }> = {
+  ok: { box: "bg-ok-soft text-ok-text", icon: <Check className="h-4 w-4" aria-hidden="true" /> },
+  warn: { box: "bg-warn-soft text-warn-text", icon: <TriangleAlert className="h-4 w-4" aria-hidden="true" /> },
+  down: { box: "bg-down-soft text-down-text", icon: <TriangleAlert className="h-4 w-4" aria-hidden="true" /> },
+  cert: { box: "bg-cobalt-soft text-cobalt", icon: <ShieldCheck className="h-4 w-4" aria-hidden="true" /> },
+  info: { box: "bg-ground text-ink-2", icon: <Terminal className="h-4 w-4" aria-hidden="true" /> },
+}
+
+function Events({ logs }: { logs: LogEntry[] }) {
+  const events = [...logs].reverse().map((e) => ({ e, h: humanize(e) })).filter((x) => x.h.notable).slice(0, 6)
+  return (
+    <section aria-labelledby="ev-title" className="flex min-w-0 flex-[1_1_360px] flex-col gap-4 rounded-[18px] border border-line bg-white p-6">
+      <div className="flex items-baseline justify-between">
+        <h2 id="ev-title" className="font-display text-xl font-semibold tracking-tight">События</h2>
+        <Link to="/logs" className="text-sm font-medium text-cobalt hover:text-cobalt-dark">Весь журнал →</Link>
+      </div>
+      {events.length === 0 ? (
+        <p className="text-sm text-ink-3">Ничего важного не происходило.</p>
+      ) : (
+        <ol className="flex flex-col">
+          {events.map(({ e, h }, i) => (
+            <li key={i} className="flex gap-3.5 border-b border-ground py-3 last:border-b-0">
+              <span className={`grid h-7 w-7 flex-none place-items-center rounded-lg ${eventStyle[h.kind].box}`}>{eventStyle[h.kind].icon}</span>
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-sm">{h.text}</span>
+                <span className="font-mono text-xs text-ink-3">
+                  {new Date(e.timestamp).toLocaleTimeString("ru-RU")} · {e.lb_name || "система"}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  )
+}
+
+// --- Page ---
 
 export default function Dashboard() {
-  const [metrics, setMetrics] = useState({
-    total_requests: 0,
-    healthy_backends: 0,
-    total_backends: 0,
-    average_latency_ms: 0,
-    error_rate_percent: 0,
-  })
+  const { lbs, rps, loaded } = useLBs()
+  const ids = lbs.slice(0, 12).map((lb) => lb.id)
+  const history = usePoll(() => api<MetricsSnapshot[]>("/metrics/history"), [] as MetricsSnapshot[], "global")
+  const perLB = usePoll(
+    async () => {
+      const entries = await Promise.all(ids.map(async (id) => [id, (await api<MetricsSnapshot[]>(`/load-balancers/history?id=${id}`)) || []] as const))
+      return Object.fromEntries(entries) as Record<number, MetricsSnapshot[]>
+    },
+    {} as Record<number, MetricsSnapshot[]>,
+    ids.join(","),
+  )
+  const logs = usePoll(() => api<LogEntry[]>("/logs"), [] as LogEntry[], "logs", 10000)
 
-  const [history, setHistory] = useState<any[]>([])
+  const health = lbs.map(lbHealth)
+  const nodesUp = health.reduce((s, h) => s + h.up, 0)
+  const nodesTotal = health.reduce((s, h) => s + h.total, 0)
+  const standby = health.reduce((s, h) => s + h.standby, 0)
+  const failedLBs = lbs.filter((lb) => lb.status === "error")
+  const nodesDown = nodesTotal - nodesUp
+  const state = failedLBs.length || health.some((h) => h.state === "down") ? "bad" : nodesDown > 0 || health.some((h) => h.state === "degraded") ? "warn" : "ok"
 
-  useEffect(() => {
-    const fetchMetrics = () => {
-      const token = localStorage.getItem("token")
-      const API_URL = `http://${window.location.hostname}:8080/api/v1/metrics/overview`
-      fetch(API_URL, {
-        headers: {
-          "Authorization": `Bearer ${token}`
-        }
-      })
-        .then(res => {
-          if (res.status === 401) {
-             localStorage.removeItem("token")
-             window.location.href = "/login"
-          }
-          return res.json()
-        })
-        .then(data => setMetrics(data))
-        .catch(console.error)
+  const last = history[history.length - 1]
+  const recent = history.slice(-30)
+  const maxRps = Math.max(1, ...lbs.map((lb) => rps[lb.id] ?? 0))
+  const running = lbs.length - failedLBs.length
+  const errorRate = last?.error_rate ?? 0
 
-      const HISTORY_URL = `http://${window.location.hostname}:8080/api/v1/metrics/history`
-      fetch(HISTORY_URL, {
-        headers: {
-          "Authorization": `Bearer ${token}`
-        }
-      })
-        .then(res => res.json())
-        .then(data => setHistory(data))
-        .catch(console.error)
-    }
-    
-    fetchMetrics() // Initial fetch
-    const interval = setInterval(fetchMetrics, 3000)
-    return () => clearInterval(interval)
-  }, [])
+  let sentence: React.ReactNode
+  if (lbs.length === 0) {
+    sentence = "Здесь появится схема трафика, как только вы создадите первый балансировщик."
+  } else if (state === "ok") {
+    sentence = (
+      <>
+        {running} {plural(running, "балансировщик принимает", "балансировщика принимают", "балансировщиков принимают")} трафик.{" "}
+        <strong className="text-ink">{nodesTotal === 1 ? "Единственный узел здоров" : `Все ${nodesTotal} ${plural(nodesTotal, "узел", "узла", "узлов")} здоровы`}</strong>
+        {standby > 0 ? `, ${standby} ${plural(standby, "ждёт", "ждут", "ждут")} в резерве.` : "."}
+      </>
+    )
+  } else {
+    sentence = (
+      <>
+        {failedLBs.length > 0 && <>Не запущен: {failedLBs.map((lb) => `«${lb.name}»`).join(", ")}. </>}
+        {nodesDown > 0 && (
+          <strong className="text-down-text">
+            Не {plural(nodesDown, "отвечает", "отвечают", "отвечают")} {nodesDown} из {nodesTotal} {plural(nodesTotal, "узла", "узлов", "узлов")}.
+          </strong>
+        )}
+      </>
+    )
+  }
+
+  const pill = {
+    ok: { box: "bg-ok-soft text-ok-text", dot: "bg-[#0E9F6E] animate-led", text: "Всё работает" },
+    warn: { box: "bg-warn-soft text-warn-text", dot: "bg-warn", text: "Есть замечания" },
+    bad: { box: "bg-down-soft text-down-text", dot: "bg-down", text: "Есть сбои" },
+  }[state]
 
   return (
-    <div className="grid gap-4 md:gap-8">
-      <div className="grid gap-4 md:grid-cols-2 md:gap-8 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Requests</CardTitle>
-            <Activity className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{metrics.total_requests.toLocaleString()}</div>
-            <p className="text-xs text-muted-foreground">Total processed requests</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Healthy Backends</CardTitle>
-            <Server className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{metrics.healthy_backends} / {metrics.total_backends}</div>
-            <p className={`text-xs flex items-center ${metrics.healthy_backends === metrics.total_backends && metrics.total_backends > 0 ? "text-green-500" : "text-yellow-500"}`}>
-              {metrics.healthy_backends === metrics.total_backends && metrics.total_backends > 0 ? (
-                <><ArrowUpRight className="h-4 w-4 mr-1" /> All systems operational</>
-              ) : (
-                <><ArrowDownRight className="h-4 w-4 mr-1" /> Some systems down</>
-              )}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Average Latency</CardTitle>
-            <Activity className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{metrics.average_latency_ms.toFixed(0)}ms</div>
-            <p className="text-xs text-muted-foreground">Current window</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Error Rate</CardTitle>
-            <Activity className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{metrics.error_rate_percent.toFixed(2)}%</div>
-            <p className={`text-xs flex items-center ${metrics.error_rate_percent > 5 ? "text-red-500" : "text-green-500"}`}>
-              {metrics.error_rate_percent > 5 ? (
-                <><ArrowDownRight className="h-4 w-4 mr-1" /> High error rate</>
-              ) : (
-                <><ArrowUpRight className="h-4 w-4 mr-1" /> Normal</>
-              )}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-      
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
-        <Card className="col-span-4">
-          <CardHeader>
-            <CardTitle>Traffic Overview</CardTitle>
-          </CardHeader>
-          <CardContent className="pl-2">
-            <div className="h-[300px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={history}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="timestamp" tickFormatter={(tick) => { const d = new Date(Number(tick)); return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(); }} className="text-xs" />
-                  <YAxis yAxisId="left" className="text-xs" />
-                  <YAxis yAxisId="right" orientation="right" className="text-xs" />
-                  <Tooltip 
-                    labelFormatter={(label: any) => { const d = new Date(Number(label)); return isNaN(d.getTime()) ? "" : d.toLocaleTimeString(); }} 
-                    formatter={(value: any, name: any) => [Math.round(Number(value) || 0), name]}
+    <div className="flex flex-col gap-7">
+      <header className="flex flex-wrap items-end justify-between gap-5">
+        <div className="flex max-w-[760px] flex-col gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5 text-[13px] text-ink-3">
+            {lbs.length > 0 && (
+              <span className={`inline-flex h-[26px] items-center gap-1.5 rounded-full px-2.5 font-semibold ${pill.box}`}>
+                <span className={`h-[7px] w-[7px] rounded-full ${pill.dot}`} />
+                {pill.text}
+              </span>
+            )}
+            <span>обновляется каждые 5 с · окно 5 минут</span>
+          </div>
+          <h1 className="font-display text-[44px] font-semibold leading-[1.05] tracking-tight">Пульс</h1>
+          <p className="text-lg leading-relaxed text-ink-2">{sentence}</p>
+        </div>
+        <div className="flex flex-wrap gap-2.5">
+          <Link to="/logs" className="inline-flex h-11 items-center rounded-[10px] border border-line bg-white px-4 text-[15px] font-medium text-ink hover:bg-accent">Журнал</Link>
+          {canEdit() && (
+            <Link to="/lbs/new" className="inline-flex h-11 items-center gap-2 rounded-[10px] bg-cobalt px-[18px] text-[15px] font-semibold text-white hover:bg-cobalt-dark">
+              <Plus className="h-[18px] w-[18px]" aria-hidden="true" />
+              Новый балансировщик
+            </Link>
+          )}
+        </div>
+      </header>
+
+      {loaded && lbs.length === 0 ? (
+        <section className="flex flex-col gap-5 rounded-[20px] border-2 border-dashed border-line-strong p-8">
+          <h2 className="font-display text-2xl font-semibold tracking-tight">Что балансируем?</h2>
+          <p className="max-w-xl text-ink-2">Выберите рецепт — настройки подставятся сами, останется указать адреса узлов.</p>
+          <div className="flex flex-wrap gap-2.5">
+            {recipeList.map((r) => (
+              <Link key={r.key} to={`/lbs/new?recipe=${r.key}`} className="inline-flex h-[52px] items-center rounded-[14px] border border-line bg-white px-[18px] text-[15px] font-medium text-ink hover:border-cobalt">
+                {r.label}
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : (
+        <>
+          <section aria-label="Показатели" className="flex flex-wrap overflow-hidden rounded-[18px] border border-line bg-white">
+            <Readout label="Запросов в секунду" value={formatNumber(last?.rps ?? 0, (last?.rps ?? 0) < 10 ? 1 : 0)} unit="запр/с">
+              <Bars values={recent.map((s) => s.rps)} color="bg-cobalt" />
+            </Readout>
+            <Readout label="Задержка узлов" value={formatNumber(last?.avg_latency_ms ?? 0, 1)} unit="мс">
+              <Bars values={recent.map((s) => s.avg_latency_ms)} color="bg-ink" />
+            </Readout>
+            <Readout label="Ошибки" value={formatNumber(errorRate, 2)} unit="%">
+              <div className={`flex h-9 items-center gap-2 text-[13px] ${errorRate < 1 ? "text-ok-text" : "text-down-text"}`}>
+                {errorRate < 1 ? <Check className="h-[18px] w-[18px]" aria-hidden="true" /> : <TriangleAlert className="h-[18px] w-[18px]" aria-hidden="true" />}
+                {errorRate < 1 ? "ниже порога 1 %" : "выше порога 1 %"}
+              </div>
+            </Readout>
+            <Readout label="Узлы" value={`${nodesUp}/${nodesTotal}`} unit="здоровы" last>
+              <div aria-hidden="true" className="flex h-9 items-center gap-1.5">
+                {lbs.flatMap((lb) => nodeViews(lb)).slice(0, 16).map((v, i) => (
+                  <span
+                    key={i}
+                    className={`box-border h-2.5 flex-1 rounded-[3px] ${v.state === "active" ? "bg-ok" : v.state === "standby" ? "border-2 border-ok bg-white" : v.state === "down" ? "bg-down" : "bg-line"}`}
                   />
-                  <Line yAxisId="left" type="monotone" dataKey="rps" stroke="#8884d8" strokeWidth={2} name="RPS" dot={false} />
-                  <Line yAxisId="right" type="monotone" dataKey="avg_latency_ms" stroke="#82ca9d" strokeWidth={2} name="Latency (ms)" dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
+                ))}
+              </div>
+            </Readout>
+          </section>
+
+          <section aria-labelledby="flow-title" className="flex flex-col gap-5 rounded-[18px] border border-line bg-white px-7 py-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-col gap-1">
+                <h2 id="flow-title" className="font-display text-xl font-semibold tracking-tight">Поток</h2>
+                <span className="text-sm text-ink-3">Толщина ленты — доля трафика. Пунктир — узлы, которые сейчас не получают запросов.</span>
+              </div>
+              <div className="flex gap-4 text-[13px] text-ink-2">
+                <span className="inline-flex items-center gap-1.5"><span className="h-2 w-[22px] rounded bg-cobalt" />трафик</span>
+                <span className="inline-flex items-center gap-1.5"><span className="w-[22px] border-t-2 border-dashed border-[#8B95A4]" />ожидание</span>
+              </div>
             </div>
-          </CardContent>
-        </Card>
-      </div>
+            {lbs.map((lb, i) => (
+              <div key={lb.id} className="flex flex-col gap-5">
+                {i > 0 && <div className="h-px bg-line-soft" />}
+                <FlowRow lb={lb} rps={rps[lb.id] ?? 0} maxRps={maxRps} />
+              </div>
+            ))}
+          </section>
+
+          <div className="flex flex-wrap items-stretch gap-6">
+            <section aria-labelledby="seis-title" className="flex min-w-0 flex-[2_1_560px] flex-col gap-5 rounded-[18px] border border-line bg-white px-7 py-6">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <h2 id="seis-title" className="font-display text-xl font-semibold tracking-tight">Сейсмограф</h2>
+                <span className="text-[13px] text-ink-3">5 минут · черта = 5 секунд · высота = нагрузка</span>
+              </div>
+              <div className="flex flex-col gap-[18px]">
+                {lbs.slice(0, 12).map((lb) => <Seismograph key={lb.id} lb={lb} history={perLB[lb.id] ?? []} />)}
+              </div>
+              <div className="flex flex-wrap gap-[18px] text-[13px] text-ink-2">
+                <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-ok" />норма</span>
+                <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-warn" />медленно</span>
+                <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-down" />ошибки</span>
+                <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-line-strong" />тишина</span>
+              </div>
+            </section>
+            <Events logs={logs} />
+          </div>
+        </>
+      )}
     </div>
   )
 }

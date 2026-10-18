@@ -1,966 +1,289 @@
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Link } from "react-router-dom"
-import { Card, CardContent } from "@/components/ui/card"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
+import { Ellipsis, Plus, Search } from "lucide-react"
+import { Bars } from "@/components/Bars"
+import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { AdviceCard, StatusPill } from "@/components/LBBits"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { adviceFor } from "@/lib/advice"
+import { api, canEdit, errorMessage } from "@/lib/api"
+import { describe, fromLB } from "@/lib/builderModel"
+import { deleteLB, testNode } from "@/lib/lbActions"
+import { useLBs } from "@/lib/lbs"
+import { formatNumber, kindLabel, kindOf, listenAddr, type Kind } from "@/lib/lbModel"
+import { recipeList } from "@/lib/recipes"
+import { usePoll } from "@/lib/usePoll"
+import type { LoadBalancer, MetricsSnapshot } from "@/types"
 
-const API_BASE = () => `http://${window.location.hostname}:8080`
-const authHeaders = () => ({
-  "Authorization": `Bearer ${localStorage.getItem("token")}`,
-  "Content-Type": "application/json"
-})
+type Filter = "all" | "http" | "tcp" | "udp"
+const filterOf = (k: Kind): Filter => (k === "http" || k === "https_term" || k === "https_pass" ? "http" : k === "tcp" ? "tcp" : "udp")
+const filters: { key: Filter; label: string }[] = [
+  { key: "all", label: "Все" },
+  { key: "http", label: "HTTP(S)" },
+  { key: "tcp", label: "TCP" },
+  { key: "udp", label: "UDP / DNS" },
+]
 
-interface BackendNode {
-  name: string
-  address: string
-  port: number | string
-  weight: number
-  enabled: boolean
-  backup: boolean
-  max_conns: number
-  tls_enabled?: boolean
-  status?: string
-  hc_enabled?: boolean
-  hc_protocol?: string
-  hc_port?: number | string
-  hc_path?: string
-  hc_interval?: number
-  hc_timeout?: number
-  hc_failure_threshold?: number
-  hc_recovery_threshold?: number
-  sni?: string
+function Tags({ lb }: { lb: LoadBalancer }) {
+  const kind = kindOf(lb)
+  const tags: { text: string; tone?: "cobalt" | "warn" | "down" }[] = [{ text: kindLabel[kind] }]
+  if (kind === "https_term" && (lb.acme_enabled || lb.auto_ssl)) {
+    const st = lb.acme_status
+    tags.push({ text: `Let's Encrypt · ${st === "ok" ? "активен" : st === "error" ? "ошибка" : "выпускается"}`, tone: st === "error" ? "down" : st === "ok" ? "cobalt" : "warn" })
+  }
+  if (lb.http_redirect) tags.push({ text: ":80 → HTTPS" })
+  if (lb.http3_enabled) tags.push({ text: "HTTP/3" })
+  if (lb.sticky_sessions_enabled) tags.push({ text: `sticky: ${lb.sticky_session_type === "cookie" ? "cookie" : "IP"}` })
+  if (lb.proxy_protocol_enabled) tags.push({ text: `PROXY v${lb.proxy_protocol_version}` })
+  const toneClass = { cobalt: "bg-cobalt-soft text-[#2338C7]", warn: "bg-warn-soft text-warn-text", down: "bg-down-soft text-down-text" }
+  return (
+    <div className="flex flex-wrap gap-1.5 font-mono text-xs">
+      {tags.map((t) => (
+        <span key={t.text} className={`rounded-md px-2 py-1 ${t.tone ? toneClass[t.tone] : "bg-ground text-ink-4"}`}>{t.text}</span>
+      ))}
+    </div>
+  )
 }
 
-const emptyBackend = (): BackendNode => ({
-  name: "",
-  address: "",
-  port: "",
-  weight: 1,
-  enabled: true,
-  backup: false,
-  max_conns: 0,
-  tls_enabled: false,
-  hc_enabled: true,
-  hc_protocol: "http",
-  hc_port: "",
-  hc_path: "/",
-  hc_interval: 10,
-  hc_timeout: 5,
-  hc_failure_threshold: 3,
-  hc_recovery_threshold: 2
-})
+function MiniTopology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
+  const nodes = lb.backend_group?.backends ?? []
+  const shown = nodes.slice(0, 4)
+  return (
+    <div aria-label="Схема" className="flex items-center rounded-[14px] bg-accent p-4">
+      <span className="flex-none rounded-lg bg-rail px-2.5 py-1.5 font-mono text-xs text-rail-text">:{lb.listen_port}</span>
+      <span aria-hidden="true" className="min-w-10 flex-1 rounded-full bg-cobalt" style={{ height: rps > 0 ? Math.min(6, 2 + rps / 10) : 2, opacity: rps > 0 ? 1 : 0.35 }} />
+      <span className="flex flex-none flex-col gap-2">
+        {nodes.length === 0 && <span className="text-[13px] text-ink-3">узлов нет</span>}
+        {shown.map((b) => {
+          const down = b.enabled && b.status === "DOWN"
+          return (
+            <span
+              key={b.id ?? b.address}
+              className={`inline-flex h-[30px] items-center gap-2 rounded-lg px-2.5 text-[13px] ${b.backup ? "border border-dashed" : "border"} ${down ? "border-down/40 bg-down-soft" : "border-line bg-white"}`}
+            >
+              <span className={`box-border h-[7px] w-[7px] rounded-full ${!b.enabled ? "bg-line-strong" : down ? "bg-down" : b.backup ? "border-2 border-ok" : "bg-ok"}`} />
+              {b.name || b.address}
+              <span className="font-mono text-ink-3">{!b.enabled ? "выкл." : down ? "не отвечает" : b.backup ? "резерв" : b.address}</span>
+            </span>
+          )
+        })}
+        {nodes.length > shown.length && <span className="text-xs text-ink-3">и ещё {nodes.length - shown.length}</span>}
+      </span>
+    </div>
+  )
+}
 
-const selectClass = "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-const checkboxClass = "h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+function Metric({ label, value, unit, first }: { label: string; value: string; unit: string; first?: boolean }) {
+  return (
+    <div className={`flex min-w-[110px] flex-1 flex-col gap-1 ${first ? "pr-4" : "border-l border-line-soft px-4"}`}>
+      <span className="text-xs text-ink-3">{label}</span>
+      <span className="font-display text-[22px] font-semibold">
+        {value} <span className="font-sans text-[13px] font-normal text-ink-3">{unit}</span>
+      </span>
+    </div>
+  )
+}
+
+function Card({ lb, rps, history, onChanged, onDelete }: { lb: LoadBalancer; rps: number; history: MetricsSnapshot[]; onChanged: () => void; onDelete: () => void }) {
+  const editable = canEdit()
+  const [testing, setTesting] = useState(false)
+  const advice = adviceFor(lb)
+  const last = history[history.length - 1]
+  const latency = last?.avg_latency_ms ?? lb.metrics?.average_latency_ms ?? 0
+  const errors = last?.error_rate ?? lb.metrics?.error_rate_percent ?? 0
+
+  const checkNodes = async () => {
+    if (kindOf(lb) === "udp") {
+      toast.info("Для UDP-узлов проверка соединения недоступна — смотрите их состояние на схеме")
+      return
+    }
+    setTesting(true)
+    const results = await Promise.all((lb.backend_group?.backends ?? []).filter((b) => b.enabled).map((b) => testNode(b, lb.backend_http2_enabled)))
+    setTesting(false)
+    const ok = results.filter((r) => r.ok).length
+    const text = results.map((r) => `${r.node.name || r.node.address} — ${r.ok ? "отвечает" : "не отвечает"}`).join(", ")
+    if (ok === results.length) toast.success(`Все узлы отвечают: ${text}`)
+    else toast.error(`Отвечают ${ok} из ${results.length}: ${text}`)
+  }
+
+  return (
+    <article className="flex min-w-0 flex-[1_1_520px] flex-col gap-[18px] rounded-[20px] border border-line bg-white p-6 sm:p-7">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h2 className="font-display text-2xl font-semibold tracking-tight">
+              <Link to={`/lbs/${lb.id}`} className="text-ink hover:text-cobalt">{lb.name}</Link>
+            </h2>
+            <StatusPill lb={lb} />
+          </div>
+          <Tags lb={lb} />
+        </div>
+        {editable && (
+          <DropdownMenu>
+            <DropdownMenuTrigger aria-label={`Действия с «${lb.name}»`} className="grid h-11 w-11 flex-none place-items-center rounded-[10px] border border-line text-ink-2 hover:bg-accent">
+              <Ellipsis className="h-[18px] w-[18px]" aria-hidden="true" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[200px] rounded-xl p-1.5">
+              <DropdownMenuItem asChild className="h-10 cursor-pointer rounded-lg px-3 text-[15px]"><Link to={`/lbs/${lb.id}/edit`}>Изменить</Link></DropdownMenuItem>
+              <DropdownMenuItem onSelect={checkNodes} className="h-10 cursor-pointer rounded-lg px-3 text-[15px]">Проверить узлы</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={onDelete} className="h-10 cursor-pointer rounded-lg px-3 text-[15px] text-down focus:text-down">Удалить…</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+
+      {lb.status === "error" && lb.status_error && (
+        <p className="rounded-[14px] bg-down-soft px-4 py-3 text-sm text-down-text">Не запустился: {lb.status_error}</p>
+      )}
+
+      <p className="text-[17px] leading-relaxed text-ink-4">{describe(fromLB(lb))}</p>
+
+      <MiniTopology lb={lb} rps={rps} />
+
+      {advice.filter((a) => a.tone === "warn").slice(0, 1).map((a) => (
+        <AdviceCard key={a.id} advice={a} lb={lb} onApplied={onChanged} compact />
+      ))}
+
+      <div className="flex flex-wrap">
+        <Metric first label="Нагрузка" value={formatNumber(rps, rps > 0 && rps < 10 ? 1 : 0)} unit="запр/с" />
+        <Metric label="Задержка" value={formatNumber(latency, 1)} unit="мс" />
+        <Metric label="Ошибки" value={formatNumber(errors, errors > 0 && errors < 1 ? 2 : 0)} unit="%" />
+      </div>
+      {history.length > 1 && <Bars values={history.slice(-48).map((s) => s.rps)} color="bg-cobalt" height={40} gap={2} fade={false} />}
+
+      <div className="mt-auto flex flex-wrap gap-2.5">
+        <Link to={`/lbs/${lb.id}`} className="inline-flex h-11 items-center rounded-[10px] bg-ink px-4 text-[15px] font-medium text-white hover:bg-ink-4">Открыть</Link>
+        {editable && <Link to={`/lbs/${lb.id}/edit`} className="inline-flex h-11 items-center rounded-[10px] border border-line px-4 text-[15px] font-medium text-ink hover:bg-accent">Изменить</Link>}
+        <button type="button" disabled={testing} onClick={checkNodes} className="h-11 rounded-[10px] border border-line px-4 text-[15px] font-medium text-ink hover:bg-accent disabled:opacity-60">
+          {testing ? "Проверяю…" : "Проверить узлы"}
+        </button>
+        {advice.length > 1 && <Link to={`/lbs/${lb.id}`} className="ml-auto inline-flex h-11 items-center text-sm font-medium text-cobalt hover:text-cobalt-dark">Советов: {advice.length}</Link>}
+      </div>
+    </article>
+  )
+}
+
+function Recipes({ title, text }: { title: string; text: string }) {
+  return (
+    <section className="flex flex-wrap items-center gap-x-8 gap-y-5 rounded-[20px] border-2 border-dashed border-line-strong p-6 sm:p-7">
+      <div className="flex flex-[1_1_280px] flex-col gap-1.5">
+        <h2 className="font-display text-xl font-semibold tracking-tight">{title}</h2>
+        <span className="text-[15px] text-ink-2">{text}</span>
+      </div>
+      <div className="flex flex-[2_1_520px] flex-wrap gap-2.5">
+        {recipeList.map((r) => (
+          <Link key={r.key} to={`/lbs/new?recipe=${r.key}`} className="inline-flex h-[52px] items-center rounded-[14px] border border-line bg-white px-[18px] text-[15px] font-medium text-ink hover:border-cobalt">
+            {r.label}
+          </Link>
+        ))}
+      </div>
+    </section>
+  )
+}
 
 export default function LoadBalancers() {
-  const [loadBalancers, setLoadBalancers] = useState<any[]>([])
-  const [isCreateOpen, setIsCreateOpen] = useState(false)
-  const [isEditOpen, setIsEditOpen] = useState(false)
-  const [editingId, setEditingId] = useState<number | null>(null)
+  const { lbs, rps, loaded, refresh } = useLBs()
+  const editable = canEdit()
+  const [filter, setFilter] = useState<Filter>("all")
+  const [query, setQuery] = useState("")
+  const [toDelete, setToDelete] = useState<LoadBalancer | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
-  // --- Form State ---
-  const [name, setName] = useState("")
-  const [listenIp, setListenIp] = useState("0.0.0.0")
-  const [listenPort, setListenPort] = useState(80)
-  const [protocol, setProtocol] = useState("http")
-  const [algorithm, setAlgorithm] = useState("round_robin")
+  const ids = lbs.slice(0, 20).map((lb) => lb.id)
+  const history = usePoll(
+    async () => Object.fromEntries(await Promise.all(ids.map(async (id) => [id, (await api<MetricsSnapshot[]>(`/load-balancers/history?id=${id}`)) || []] as const))) as Record<number, MetricsSnapshot[]>,
+    {} as Record<number, MetricsSnapshot[]>,
+    ids.join(","),
+  )
 
-  // SSL / TLS
-  const [sslEnabled, setSslEnabled] = useState(false)
-  const [acmeEnabled, setAcmeEnabled] = useState(false)
-  const [acmeEmail, setAcmeEmail] = useState("")
-  const [acmeDomains, setAcmeDomains] = useState("")
-  const [certPath, setCertPath] = useState("")
-  const [keyPath, setKeyPath] = useState("")
-  const [certData, setCertData] = useState("")
-  const [keyData, setKeyData] = useState("")
+  const q = query.trim().toLowerCase()
+  const counts = { all: lbs.length, http: 0, tcp: 0, udp: 0 } as Record<Filter, number>
+  for (const lb of lbs) counts[filterOf(kindOf(lb))]++
+  const shown = lbs.filter((lb) => {
+    if (filter !== "all" && filterOf(kindOf(lb)) !== filter) return false
+    if (!q) return true
+    const hay = [lb.name, listenAddr(lb), lb.acme_domains, ...(lb.backend_group?.backends ?? []).flatMap((b) => [b.name, b.address])].join(" ").toLowerCase()
+    return hay.includes(q)
+  })
 
-  // HTTP/3
-  const [http3Enabled, setHttp3Enabled] = useState(false)
-  const [backendHttp2Enabled, setBackendHttp2Enabled] = useState(false)
-
-  // Proxy Protocol
-  const [proxyProtocolEnabled, setProxyProtocolEnabled] = useState(false)
-  const [proxyProtocolVersion, setProxyProtocolVersion] = useState(2)
-
-  // Sticky Sessions
-  const [stickyEnabled, setStickyEnabled] = useState(false)
-  const [stickyType, setStickyType] = useState("ip")
-
-  // Backend Nodes
-  const [backends, setBackends] = useState<BackendNode[]>([emptyBackend()])
-
-  const resetForm = () => {
-    setName(""); setListenIp("0.0.0.0"); setListenPort(80)
-    setProtocol("http"); setAlgorithm("round_robin")
-    setSslEnabled(false); setAcmeEnabled(false); setAcmeEmail(""); setAcmeDomains("")
-    setCertPath(""); setKeyPath("")
-    setCertData(""); setKeyData("")
-    setHttp3Enabled(false); setBackendHttp2Enabled(false)
-    setProxyProtocolEnabled(false); setProxyProtocolVersion(2)
-    setStickyEnabled(false); setStickyType("ip")
-    setBackends([emptyBackend()])
-  }
-
-  const [showAdvanced, setShowAdvanced] = useState(false)
-
-  const handleProtocolChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const p = e.target.value
-    setProtocol(p)
-    if (p === "http") setListenPort(80)
-    else if (p === "https" || p === "tcp") setListenPort(443)
-    else if (p === "udp") setListenPort(53)
-  }
-
-  // --- Backend node helpers ---
-  const addBackend = () => setBackends([...backends, emptyBackend()])
-  const removeBackend = (i: number) => setBackends(backends.filter((_, idx) => idx !== i))
-  const updateBackend = (i: number, field: keyof BackendNode, value: any) => {
-    const updated = [...backends]
-    updated[i] = { ...updated[i], [field]: value }
-    setBackends(updated)
-  }
-
-  const [testResults, setTestResults] = useState<Record<number, string>>({})
-  const testBackendConnection = async (i: number) => {
-    const b = backends[i]
-    if (!b.address) return
-    setTestResults({ ...testResults, [i]: "Testing..." })
+  const confirmDelete = async () => {
+    if (!toDelete) return
+    setDeleting(true)
     try {
-      const res = await fetch(`${API_BASE()}/api/v1/tools/test-connection`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${localStorage.getItem("token")}`
-        },
-        body: JSON.stringify({
-          address: b.address,
-          port: b.port,
-          tls_enabled: b.tls_enabled || false,
-          http2_enabled: backendHttp2Enabled
-        })
-      })
-      if (!res.ok) {
-        const text = await res.text()
-        setTestResults({ ...testResults, [i]: `HTTP Error ${res.status}: ${text}` })
-        return
-      }
-      const data = await res.json()
-      setTestResults({ ...testResults, [i]: data.logs || "Unknown error" })
-    } catch (e: any) {
-      setTestResults({ ...testResults, [i]: `Network error: ${e.message}` })
-    }
-  }
-
-  // --- Fetch ---
-  const fetchLoadBalancers = () => {
-    fetch(`${API_BASE()}/api/v1/load-balancers`, {
-      headers: { "Authorization": `Bearer ${localStorage.getItem("token")}` }
-    })
-      .then(res => {
-        if (res.status === 401) {
-          localStorage.removeItem("token")
-          window.location.href = "/login"
-        }
-        return res.json()
-      })
-      .then(data => setLoadBalancers(data || []))
-      .catch(console.error)
-  }
-
-  useEffect(() => { fetchLoadBalancers() }, [])
-
-  // --- Create ---
-  const handleCreate = async () => {
-    if (!name.trim()) { toast.error("Name is required"); return }
-    if (backends.filter(b => b.address.trim()).length === 0) {
-      toast.error("Add at least one backend node"); return
-    }
-
-    const payload = {
-      name,
-      listen_ip: listenIp,
-      listen_port: listenPort,
-      protocol,
-      algorithm,
-      ssl_enabled: sslEnabled,
-      auto_ssl: acmeEnabled, // Map auto_ssl for backward compatibility or future use
-      cert_path: certPath,
-      key_path: keyPath,
-      cert_data: certData,
-      key_data: keyData,
-      acme_enabled: acmeEnabled,
-      acme_email: acmeEmail,
-      acme_domains: acmeDomains,
-      http3_enabled: http3Enabled,
-      backend_http2_enabled: backendHttp2Enabled,
-      proxy_protocol_enabled: proxyProtocolEnabled,
-      proxy_protocol_version: proxyProtocolVersion,
-      sticky_sessions_enabled: stickyEnabled,
-      sticky_session_type: stickyType,
-      backend_group: {
-        name: name + " Group",
-        backends: backends.filter(b => b.address.trim()).map(b => ({
-          name: b.name || b.address,
-          address: b.address,
-          port: typeof b.port === 'string' && b.port === '' ? 0 : b.port,
-          weight: b.weight,
-          enabled: b.enabled,
-          backup: b.backup,
-          max_conns: b.max_conns,
-          tls_enabled: b.tls_enabled,
-          hc_enabled: b.hc_enabled,
-          hc_protocol: b.hc_protocol,
-          hc_port: typeof b.hc_port === 'string' && b.hc_port === '' ? 0 : b.hc_port,
-          hc_path: b.hc_path,
-          hc_interval: b.hc_interval,
-          hc_timeout: b.hc_timeout,
-          hc_failure_threshold: b.hc_failure_threshold,
-          hc_recovery_threshold: b.hc_recovery_threshold,
-          sni: b.sni
-        }))
-      }
-    }
-
-    try {
-      const res = await fetch(`${API_BASE()}/api/v1/load-balancers`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify(payload)
-      })
-      if (!res.ok) throw new Error("Failed to create")
-      toast.success("Load Balancer created!")
-      setIsCreateOpen(false)
-      resetForm()
-      fetchLoadBalancers()
-    } catch {
-      toast.error("Error creating load balancer")
-    }
-  }
-
-  // --- Edit / Update ---
-  const openEditModal = (lb: any) => {
-    setEditingId(lb.id)
-    setName(lb.name || "")
-    setListenIp(lb.listen_ip || "0.0.0.0")
-    setListenPort(lb.listen_port || 80)
-    setProtocol(lb.protocol || "http")
-    setAlgorithm(lb.algorithm || "round_robin")
-    setSslEnabled(lb.ssl_enabled)
-    setAcmeEnabled(lb.acme_enabled || lb.auto_ssl)
-    setCertPath(lb.cert_path || "")
-    setKeyPath(lb.key_path || "")
-    setCertData(lb.cert_data || "")
-    setKeyData(lb.key_data || "")
-    setAcmeEmail(lb.acme_email || "")
-    setAcmeDomains(lb.acme_domains || "")
-    setHttp3Enabled(lb.http3_enabled || false)
-    setBackendHttp2Enabled(lb.backend_http2_enabled || false)
-    setProxyProtocolEnabled(lb.proxy_protocol_enabled || false)
-    setProxyProtocolVersion(lb.proxy_protocol_version || 2)
-    setStickyEnabled(lb.sticky_sessions_enabled || false)
-    setStickyType(lb.sticky_session_type || "ip")
-    
-    if (lb.backend_group) {
-      if (lb.backend_group.backends && lb.backend_group.backends.length > 0) {
-        setBackends(lb.backend_group.backends)
-      } else {
-        setBackends([emptyBackend()])
-      }
-    } else {
-      setBackends([emptyBackend()])
-    }
-    
-    setIsEditOpen(true)
-  }
-
-  const handleUpdate = async () => {
-    if (!name.trim()) { toast.error("Name is required"); return }
-    if (backends.filter(b => b.address.trim()).length === 0) {
-      toast.error("Add at least one backend node"); return
-    }
-    if (editingId === null) return;
-
-    const payload = {
-      id: editingId,
-      name,
-      listen_ip: listenIp,
-      listen_port: listenPort,
-      protocol,
-      algorithm,
-      ssl_enabled: sslEnabled,
-      auto_ssl: acmeEnabled, // Map auto_ssl
-      cert_path: certPath,
-      key_path: keyPath,
-      cert_data: certData,
-      key_data: keyData,
-      acme_enabled: acmeEnabled,
-      acme_email: acmeEmail,
-      acme_domains: acmeDomains,
-      http3_enabled: http3Enabled,
-      backend_http2_enabled: backendHttp2Enabled,
-      proxy_protocol_enabled: proxyProtocolEnabled,
-      proxy_protocol_version: proxyProtocolVersion,
-      sticky_sessions_enabled: stickyEnabled,
-      sticky_session_type: stickyType,
-      backend_group: {
-        name: name + " Group",
-        backends: backends.filter(b => b.address.trim()).map(b => ({
-          name: b.name || b.address,
-          address: b.address,
-          port: typeof b.port === 'string' && b.port === '' ? 0 : b.port,
-          weight: b.weight,
-          enabled: b.enabled !== undefined ? b.enabled : true,
-          backup: b.backup || false,
-          max_conns: b.max_conns || 0,
-          tls_enabled: b.tls_enabled || false,
-          hc_enabled: b.hc_enabled,
-          hc_protocol: b.hc_protocol,
-          hc_port: typeof b.hc_port === 'string' && b.hc_port === '' ? 0 : b.hc_port,
-          hc_path: b.hc_path,
-          hc_interval: b.hc_interval,
-          hc_timeout: b.hc_timeout,
-          hc_failure_threshold: b.hc_failure_threshold,
-          hc_recovery_threshold: b.hc_recovery_threshold,
-          sni: b.sni
-        }))
-      }
-    }
-
-    try {
-      const res = await fetch(`${API_BASE()}/api/v1/load-balancers`, {
-        method: "PUT",
-        headers: authHeaders(),
-        body: JSON.stringify(payload)
-      })
-      if (!res.ok) throw new Error("Failed to update")
-      toast.success("Load Balancer updated!")
-      setIsEditOpen(false)
-      resetForm()
-      fetchLoadBalancers()
-    } catch {
-      toast.error("Error updating load balancer")
-    }
-  }
-
-  // --- Delete ---
-  const handleDelete = async (id: number) => {
-    if (!confirm("Are you sure you want to delete this Load Balancer?")) return
-    try {
-      const res = await fetch(`${API_BASE()}/api/v1/load-balancers/delete?id=${id}`, {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${localStorage.getItem("token")}` }
-      })
-      if (!res.ok) throw new Error("Failed to delete")
-      toast.success("Load Balancer deleted!")
-      fetchLoadBalancers()
-    } catch {
-      toast.error("Error deleting load balancer")
+      await deleteLB(toDelete)
+      toast.success(`«${toDelete.name}» удалён`)
+      setToDelete(null)
+      refresh()
+    } catch (err) {
+      toast.error(errorMessage(err))
+    } finally {
+      setDeleting(false)
     }
   }
 
   return (
-    <div className="grid gap-4 md:gap-8">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold tracking-tight">Load Balancers</h2>
+    <div className="flex flex-col gap-6">
+      <header className="flex flex-wrap items-end justify-between gap-5">
+        <div className="flex flex-col gap-2">
+          <h1 className="font-display text-[44px] font-semibold leading-[1.05] tracking-tight">Балансировщики</h1>
+          <p className="text-[17px] text-ink-2">Каждый объясняет, что делает, — без таблиц из флажков.</p>
+        </div>
+        {editable && (
+          <Link to="/lbs/new" className="inline-flex h-11 items-center gap-2 rounded-[10px] bg-cobalt px-[18px] text-[15px] font-semibold text-white hover:bg-cobalt-dark">
+            <Plus className="h-[18px] w-[18px]" aria-hidden="true" />
+            Новый балансировщик
+          </Link>
+        )}
+      </header>
 
-        <Dialog open={isCreateOpen} onOpenChange={(open) => { setIsCreateOpen(open); if (!open) resetForm() }}>
-          <DialogTrigger asChild>
-            <Button>Create Load Balancer</Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>Create New Load Balancer</DialogTitle>
-            </DialogHeader>
-            <div className="grid gap-6 py-4">
-
-              {/* === BASIC SETTINGS === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Basic Settings</h3>
-                <div className="grid gap-2">
-                  <label className="text-sm font-medium">Name *</label>
-                  <Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Production HTTP" />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <label className="text-sm font-medium">Listen IP</label>
-                    <Input value={listenIp} onChange={e => setListenIp(e.target.value)} placeholder="0.0.0.0" />
-                  </div>
-                  <div className="grid gap-2">
-                    <label className="text-sm font-medium">Port</label>
-                    <Input type="number" value={listenPort} onChange={e => setListenPort(parseInt(e.target.value) || 80)} />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <label className="text-sm font-medium">Protocol</label>
-                    <select className={selectClass} value={protocol} onChange={handleProtocolChange}>
-                      <option value="http">HTTP</option>
-                      <option value="https">HTTPS</option>
-                      <option value="tcp">TCP</option>
-                      <option value="udp">UDP</option>
-                    </select>
-                  </div>
-                  <div className="grid gap-2">
-                    <label className="text-sm font-medium">Algorithm</label>
-                    <select className={selectClass} value={algorithm} onChange={e => setAlgorithm(e.target.value)}>
-                      <option value="round_robin">Round Robin</option>
-                      <option value="least_conn">Least Connections</option>
-                      <option value="ip_hash">IP Hash</option>
-                      <option value="failover">Failover (Active-Passive)</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* === ADVANCED SETTINGS TOGGLE === */}
-              <div>
-                <Button variant="outline" onClick={() => setShowAdvanced(!showAdvanced)} className="w-full justify-start text-muted-foreground border-dashed">
-                  {showAdvanced ? "▾ Hide Advanced Settings" : "▸ Show Advanced Settings"}
-                </Button>
-              </div>
-
-              {showAdvanced && (
-                <div className="space-y-6 pt-4 border-t mt-4">
-                  {/* === PROXY PROTOCOL === */}
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Proxy Protocol (Real IP)</h3>
-                    <div className="flex items-center gap-3">
-                      <input type="checkbox" className={checkboxClass} checked={proxyProtocolEnabled} onChange={e => setProxyProtocolEnabled(e.target.checked)} id="pp-enabled" />
-                      <label htmlFor="pp-enabled" className="text-sm font-medium">Enable Proxy Protocol</label>
-                    </div>
-                    {proxyProtocolEnabled && (
-                      <div className="grid gap-2 ml-7">
-                        <label className="text-sm font-medium">Version</label>
-                        <select className={selectClass} value={proxyProtocolVersion} onChange={e => setProxyProtocolVersion(parseInt(e.target.value))}>
-                          <option value={1}>v1 (text)</option>
-                          <option value={2}>v2 (binary, recommended)</option>
-                        </select>
-                        <p className="text-xs text-muted-foreground">Passes real client IP to backend servers through the PROXY protocol header.</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* === SSL / TLS === */}
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">SSL / TLS (For incoming connections)</h3>
-                    <div className="flex items-center gap-3">
-                      <input type="checkbox" className={checkboxClass} checked={sslEnabled} onChange={e => setSslEnabled(e.target.checked)} id="ssl-enabled" />
-                      <label htmlFor="ssl-enabled" className="text-sm font-medium">Enable SSL/TLS</label>
-                    </div>
-                    {sslEnabled && (
-                      <div className="space-y-3 ml-7">
-                        <div className="flex items-center gap-3">
-                          <input type="checkbox" className={checkboxClass} checked={acmeEnabled} onChange={e => setAcmeEnabled(e.target.checked)} id="acme-enabled" />
-                          <label htmlFor="acme-enabled" className="text-sm font-medium">Auto-SSL (Let's Encrypt / ACME)</label>
-                        </div>
-                        {acmeEnabled && (
-                          <div className="grid gap-3 ml-7">
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">ACME Email</label>
-                              <Input value={acmeEmail} onChange={e => setAcmeEmail(e.target.value)} placeholder="admin@example.com" />
-                            </div>
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">Domains (Comma separated)</label>
-                              <Input value={acmeDomains} onChange={e => setAcmeDomains(e.target.value)} placeholder="example.com, www.example.com" />
-                            </div>
-                          </div>
-                        )}
-                        {!acmeEnabled && (
-                          <div className="grid gap-4 ml-7 mt-2">
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">Certificate (PEM string)</label>
-                              <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
-                                value={certData} onChange={e => setCertData(e.target.value)} placeholder="-----BEGIN CERTIFICATE-----..." />
-                            </div>
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">Private Key (PEM string)</label>
-                              <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
-                                value={keyData} onChange={e => setKeyData(e.target.value)} placeholder="-----BEGIN PRIVATE KEY-----..." />
-                            </div>
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">OR Certificate Path (on server)</label>
-                              <Input value={certPath} onChange={e => setCertPath(e.target.value)} placeholder="/app/certs/server.crt" />
-                            </div>
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">OR Private Key Path (on server)</label>
-                              <Input value={keyPath} onChange={e => setKeyPath(e.target.value)} placeholder="/app/certs/server.key" />
-                            </div>
-                            <p className="text-xs text-muted-foreground">Paste the certificate contents OR specify paths on the server. Leave empty for self-signed.</p>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* === HTTP/3 === */}
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">HTTP/3 (QUIC)</h3>
-                    <div className="flex items-center gap-3">
-                      <input type="checkbox" className={checkboxClass} checked={http3Enabled} onChange={e => setHttp3Enabled(e.target.checked)} id="h3-enabled" />
-                      <label htmlFor="h3-enabled" className="text-sm font-medium">Enable HTTP/3</label>
-                    </div>
-                    <p className="text-xs text-muted-foreground ml-7">Enables QUIC-based HTTP/3 for faster connections. Requires SSL.</p>
-                  </div>
-
-                  {/* === STICKY SESSIONS === */}
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Sticky Sessions</h3>
-                    <div className="flex items-center gap-3">
-                      <input type="checkbox" className={checkboxClass} checked={stickyEnabled} onChange={e => setStickyEnabled(e.target.checked)} id="sticky-enabled" />
-                      <label htmlFor="sticky-enabled" className="text-sm font-medium">Enable Sticky Sessions</label>
-                    </div>
-                    {stickyEnabled && (
-                      <div className="grid gap-2 ml-7">
-                        <label className="text-sm font-medium">Type</label>
-                        <select className={selectClass} value={stickyType} onChange={e => setStickyType(e.target.value)}>
-                          <option value="ip">Source IP</option>
-                          <option value="cookie">Cookie</option>
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* === BACKEND NODES === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Backend Nodes *</h3>
-                {backends.map((b, i) => (
-                  <div key={i} className="border rounded-lg p-4 space-y-3 relative">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">Node #{i + 1}</span>
-                        <Button variant="outline" size="sm" className="h-6 px-2 text-xs ml-2" onClick={() => testBackendConnection(i)}>Test Connection</Button>
-                      </div>
-                      {backends.length > 1 && (
-                        <Button variant="ghost" size="sm" className="text-destructive h-6 px-2" onClick={() => removeBackend(i)}>✕ Remove</Button>
-                      )}
-                    </div>
-                    {testResults[i] && (
-                      <div className="text-xs bg-slate-900 text-slate-300 p-2 rounded whitespace-pre-wrap font-mono">
-                        {testResults[i]}
-                      </div>
-                    )}
-                    <div className="grid grid-cols-4 gap-3">
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground">Name</label>
-                        <Input value={b.name} onChange={e => updateBackend(i, "name", e.target.value)} placeholder="App Node 1" />
-                      </div>
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground">Address *</label>
-                        <Input value={b.address} onChange={e => updateBackend(i, "address", e.target.value)} placeholder="192.168.1.10" />
-                      </div>
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground">Port</label>
-                        <Input type="number" value={b.port} onChange={e => updateBackend(i, "port", e.target.value ? parseInt(e.target.value) : "")} />
-                      </div>
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground" title="Override SNI and Host header">SNI / Host</label>
-                        <Input value={b.sni || ""} onChange={e => updateBackend(i, "sni", e.target.value)} placeholder="Override" />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-3">
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground">Weight</label>
-                        <Input type="number" value={b.weight} onChange={e => updateBackend(i, "weight", parseInt(e.target.value) || 1)} min={1} />
-                      </div>
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground">Max Connections (0 = unlimited)</label>
-                        <Input type="number" value={b.max_conns} onChange={e => updateBackend(i, "max_conns", parseInt(e.target.value) || 0)} min={0} />
-                      </div>
-                      <div className="flex items-end gap-2 flex-wrap pb-1">
-                        <label className="flex items-center gap-2 text-xs">
-                          <input type="checkbox" className={checkboxClass} checked={b.enabled} onChange={e => updateBackend(i, "enabled", e.target.checked)} />
-                          Enabled
-                        </label>
-                        <label className="flex items-center gap-2 text-xs" title="Backup nodes only receive traffic when ALL primary nodes are down">
-                          <input type="checkbox" className={checkboxClass} checked={b.backup} onChange={e => updateBackend(i, "backup", e.target.checked)} />
-                          Backup (standby)
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                <Button variant="outline" onClick={addBackend} className="w-full">+ Add Backend Node</Button>
-              </div>
-
-
-
-              {/* === CREATE BUTTON === */}
-              <Button onClick={handleCreate} className="w-full mt-2" size="lg">Create Load Balancer</Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-
-        <Dialog open={isEditOpen} onOpenChange={(open) => { setIsEditOpen(open); if (!open) resetForm() }}>
-          <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>Edit Load Balancer</DialogTitle>
-            </DialogHeader>
-            <div className="grid gap-6 py-4">
-
-              {/* === BASIC SETTINGS === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Basic Settings</h3>
-                <div className="grid gap-2">
-                  <label className="text-sm font-medium">Name *</label>
-                  <Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Production HTTP" />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <label className="text-sm font-medium">Listen IP</label>
-                    <Input value={listenIp} onChange={e => setListenIp(e.target.value)} placeholder="0.0.0.0" />
-                  </div>
-                  <div className="grid gap-2">
-                    <label className="text-sm font-medium">Port</label>
-                    <Input type="number" value={listenPort} onChange={e => setListenPort(parseInt(e.target.value) || 80)} />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <label className="text-sm font-medium">Protocol</label>
-                    <select className={selectClass} value={protocol} onChange={handleProtocolChange}>
-                      <option value="http">HTTP</option>
-                      <option value="https">HTTPS</option>
-                      <option value="tcp">TCP</option>
-                      <option value="udp">UDP</option>
-                    </select>
-                  </div>
-                  <div className="grid gap-2">
-                    <label className="text-sm font-medium">Algorithm</label>
-                    <select className={selectClass} value={algorithm} onChange={e => setAlgorithm(e.target.value)}>
-                      <option value="round_robin">Round Robin</option>
-                      <option value="least_conn">Least Connections</option>
-                      <option value="ip_hash">IP Hash</option>
-                      <option value="failover">Failover (Active-Passive)</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* === ADVANCED SETTINGS TOGGLE === */}
-              <div>
-                <Button variant="outline" onClick={() => setShowAdvanced(!showAdvanced)} className="w-full justify-start text-muted-foreground border-dashed">
-                  {showAdvanced ? "▾ Hide Advanced Settings" : "▸ Show Advanced Settings"}
-                </Button>
-              </div>
-
-              {showAdvanced && (
-                <div className="space-y-6 pt-4 border-t mt-4">
-                  {/* === PROXY PROTOCOL === */}
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Proxy Protocol (Real IP)</h3>
-                    <div className="flex items-center gap-3">
-                      <input type="checkbox" className={checkboxClass} checked={proxyProtocolEnabled} onChange={e => setProxyProtocolEnabled(e.target.checked)} id="edit-pp-enabled" />
-                      <label htmlFor="edit-pp-enabled" className="text-sm font-medium">Enable Proxy Protocol</label>
-                    </div>
-                    {proxyProtocolEnabled && (
-                      <div className="grid gap-2 ml-7">
-                        <label className="text-sm font-medium">Version</label>
-                        <select className={selectClass} value={proxyProtocolVersion} onChange={e => setProxyProtocolVersion(parseInt(e.target.value))}>
-                          <option value={1}>v1 (text)</option>
-                          <option value={2}>v2 (binary, recommended)</option>
-                        </select>
-                        <p className="text-xs text-muted-foreground">Passes real client IP to backend servers through the PROXY protocol header.</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* === SSL / TLS === */}
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">SSL / TLS (For incoming connections)</h3>
-                    <div className="flex items-center gap-3">
-                      <input type="checkbox" className={checkboxClass} checked={sslEnabled} onChange={e => setSslEnabled(e.target.checked)} id="edit-ssl-enabled" />
-                      <label htmlFor="edit-ssl-enabled" className="text-sm font-medium">Enable SSL/TLS</label>
-                    </div>
-                    {sslEnabled && (
-                      <div className="space-y-3 ml-7">
-                        <div className="flex items-center gap-3">
-                          <input type="checkbox" className={checkboxClass} checked={acmeEnabled} onChange={e => setAcmeEnabled(e.target.checked)} id="edit-acme-enabled" />
-                          <label htmlFor="edit-acme-enabled" className="text-sm font-medium">Auto-SSL (Let's Encrypt / ACME)</label>
-                        </div>
-                        {acmeEnabled && (
-                          <div className="grid gap-3 ml-7">
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">ACME Email</label>
-                              <Input value={acmeEmail} onChange={e => setAcmeEmail(e.target.value)} placeholder="admin@example.com" />
-                            </div>
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">Domains (Comma separated)</label>
-                              <Input value={acmeDomains} onChange={e => setAcmeDomains(e.target.value)} placeholder="example.com, www.example.com" />
-                            </div>
-                          </div>
-                        )}
-                        {!acmeEnabled && (
-                          <div className="grid gap-4 ml-7 mt-2">
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">Certificate (PEM string)</label>
-                              <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
-                                value={certData} onChange={e => setCertData(e.target.value)} placeholder="-----BEGIN CERTIFICATE-----..." />
-                            </div>
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">Private Key (PEM string)</label>
-                              <textarea className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50" 
-                                value={keyData} onChange={e => setKeyData(e.target.value)} placeholder="-----BEGIN PRIVATE KEY-----..." />
-                            </div>
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">OR Certificate Path (on server)</label>
-                              <Input value={certPath} onChange={e => setCertPath(e.target.value)} placeholder="/app/certs/server.crt" />
-                            </div>
-                            <div className="grid gap-2">
-                              <label className="text-sm font-medium">OR Private Key Path (on server)</label>
-                              <Input value={keyPath} onChange={e => setKeyPath(e.target.value)} placeholder="/app/certs/server.key" />
-                            </div>
-                            <p className="text-xs text-muted-foreground">Paste the certificate contents OR specify paths on the server. Leave empty for self-signed.</p>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* === HTTP/3 === */}
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">HTTP/3 (QUIC)</h3>
-                    <div className="flex items-center gap-3">
-                      <input type="checkbox" className={checkboxClass} checked={http3Enabled} onChange={e => setHttp3Enabled(e.target.checked)} id="edit-h3-enabled" />
-                      <label htmlFor="edit-h3-enabled" className="text-sm font-medium">Enable HTTP/3</label>
-                    </div>
-                    <p className="text-xs text-muted-foreground ml-7">Enables QUIC-based HTTP/3 for faster connections. Requires SSL.</p>
-                  </div>
-
-                  {/* === STICKY SESSIONS === */}
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Sticky Sessions</h3>
-                    <div className="flex items-center gap-3">
-                      <input type="checkbox" className={checkboxClass} checked={stickyEnabled} onChange={e => setStickyEnabled(e.target.checked)} id="edit-sticky-enabled" />
-                      <label htmlFor="edit-sticky-enabled" className="text-sm font-medium">Enable Sticky Sessions</label>
-                    </div>
-                    {stickyEnabled && (
-                      <div className="grid gap-2 ml-7">
-                        <label className="text-sm font-medium">Type</label>
-                        <select className={selectClass} value={stickyType} onChange={e => setStickyType(e.target.value)}>
-                          <option value="ip">Source IP</option>
-                          <option value="cookie">Cookie</option>
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* === BACKEND NODES === */}
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground border-b pb-2">Backend Nodes *</h3>
-                {backends.map((b, i) => (
-                  <div key={i} className="border rounded-lg p-4 space-y-3 relative">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">Node #{i + 1}</span>
-                        <Button variant="outline" size="sm" className="h-6 px-2 text-xs ml-2" onClick={() => testBackendConnection(i)}>Test Connection</Button>
-                      </div>
-                      {backends.length > 1 && (
-                        <Button variant="ghost" size="sm" className="text-destructive h-6 px-2" onClick={() => removeBackend(i)}>✕ Remove</Button>
-                      )}
-                    </div>
-                    {testResults[i] && (
-                      <div className="text-xs bg-slate-900 text-slate-300 p-2 rounded whitespace-pre-wrap font-mono">
-                        {testResults[i]}
-                      </div>
-                    )}
-                    <div className="grid grid-cols-4 gap-3">
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground">Name</label>
-                        <Input value={b.name} onChange={e => updateBackend(i, "name", e.target.value)} placeholder="App Node 1" />
-                      </div>
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground">Address *</label>
-                        <Input value={b.address} onChange={e => updateBackend(i, "address", e.target.value)} placeholder="192.168.1.10" />
-                      </div>
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground">Port</label>
-                        <Input type="number" value={b.port} onChange={e => updateBackend(i, "port", e.target.value ? parseInt(e.target.value) : "")} />
-                      </div>
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground" title="Override SNI and Host header">SNI / Host</label>
-                        <Input value={b.sni || ""} onChange={e => updateBackend(i, "sni", e.target.value)} placeholder="Override" />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-3">
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground">Weight</label>
-                        <Input type="number" value={b.weight} onChange={e => updateBackend(i, "weight", parseInt(e.target.value) || 1)} min={1} />
-                      </div>
-                      <div className="grid gap-1">
-                        <label className="text-xs text-muted-foreground">Max Connections (0 = unlimited)</label>
-                        <Input type="number" value={b.max_conns} onChange={e => updateBackend(i, "max_conns", parseInt(e.target.value) || 0)} min={0} />
-                      </div>
-                      <div className="flex items-end gap-2 flex-wrap pb-1">
-                        <label className="flex items-center gap-1 text-xs">
-                          <input type="checkbox" className={checkboxClass} checked={b.enabled} onChange={e => updateBackend(i, "enabled", e.target.checked)} />
-                          Enabled
-                        </label>
-                        <label className="flex items-center gap-1 text-xs" title="Backup nodes only receive traffic when ALL primary nodes are down">
-                          <input type="checkbox" className={checkboxClass} checked={b.backup} onChange={e => updateBackend(i, "backup", e.target.checked)} />
-                          Backup
-                        </label>
-                        <label className="flex items-center gap-1 text-xs text-blue-500" title="Connect to this node via HTTPS instead of HTTP">
-                          <input type="checkbox" className={checkboxClass} checked={b.tls_enabled || false} onChange={e => updateBackend(i, "tls_enabled", e.target.checked)} />
-                          HTTPS
-                        </label>
-                      </div>
-                      
-                      {/* Backend-level Health Checks */}
-                      <div className="col-span-3 border-t pt-3 mt-2">
-                        <div className="flex items-center gap-3 mb-2">
-                          <input type="checkbox" className={checkboxClass} checked={b.hc_enabled ?? true} onChange={e => updateBackend(i, "hc_enabled", e.target.checked)} id={`edit-hc-enabled-${i}`} />
-                          <label htmlFor={`edit-hc-enabled-${i}`} className="text-xs font-medium">Enable Health Checks</label>
-                        </div>
-                        {(b.hc_enabled ?? true) && (
-                          <div className="grid grid-cols-4 gap-3">
-                            <div className="grid gap-1">
-                              <label className="text-xs text-muted-foreground">Protocol</label>
-                              <select className={selectClass} value={b.hc_protocol || "http"} onChange={e => updateBackend(i, "hc_protocol", e.target.value)}>
-                                <option value="http">HTTP</option>
-                                <option value="tcp">TCP</option>
-                                <option value="udp">UDP</option>
-                              </select>
-                            </div>
-                            <div className="grid gap-1">
-                              <label className="text-xs text-muted-foreground">Port</label>
-                              <Input type="number" value={b.hc_port} onChange={e => updateBackend(i, "hc_port", e.target.value ? parseInt(e.target.value) : "")} />
-                            </div>
-                            <div className="grid gap-1">
-                              <label className="text-xs text-muted-foreground">Path</label>
-                              <Input value={b.hc_path || "/"} onChange={e => updateBackend(i, "hc_path", e.target.value)} />
-                            </div>
-                            <div className="grid gap-1">
-                              <label className="text-xs text-muted-foreground">Interval</label>
-                              <Input type="number" value={b.hc_interval || 10} onChange={e => updateBackend(i, "hc_interval", parseInt(e.target.value) || 10)} />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                <Button variant="outline" onClick={addBackend} className="w-full">+ Add Backend Node</Button>
-              </div>
-
-
-
-              {/* === UPDATE BUTTON === */}
-              <Button onClick={handleUpdate} className="w-full mt-2" size="lg">Update Load Balancer</Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      </div>
-
-      {/* === TABLE === */}
-      <Card>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Address</TableHead>
-                <TableHead>Protocol</TableHead>
-                <TableHead>Algorithm</TableHead>
-                <TableHead>Backends</TableHead>
-                <TableHead>SSL</TableHead>
-                <TableHead>Proxy Protocol</TableHead>
-                <TableHead>Metrics</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loadBalancers.map((lb) => (
-                <TableRow key={lb.id}>
-                  <TableCell className="font-medium">
-                    <Link to={`/lbs/${lb.id}`} className="hover:underline text-blue-500">
-                      {lb.name}
-                    </Link>
-                  </TableCell>
-                  <TableCell>{lb.listen_ip}:{lb.listen_port}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{lb.protocol?.toUpperCase()}</Badge>
-                    {lb.http3_enabled && <Badge variant="secondary" className="ml-1">H3</Badge>}
-                  </TableCell>
-                  <TableCell>{lb.algorithm?.replace("_", " ")}</TableCell>
-                  <TableCell>
-                    <div className="flex flex-col gap-1">
-                      <Badge variant="secondary">{lb.backend_group?.backends?.length || 0} nodes</Badge>
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {lb.backend_group?.backends?.map((b: any, i: number) => {
-                           return (
-                             <div key={b.id || i} className="flex items-center gap-1 text-[10px] text-muted-foreground" title={`${b.address}:${b.port}`}>
-                               <div className={`w-2 h-2 rounded-full ${b.status === 'UP' ? 'bg-green-500' : (b.status === 'DOWN' ? 'bg-red-500' : 'bg-gray-500')}`} title={b.status || 'UNKNOWN'} />
-                               {b.name || b.address}
-                             </div>
-                           )
-                        })}
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    {lb.ssl_enabled ? (
-                      lb.acme_enabled ? (
-                        <Badge 
-                          className={
-                            lb.acme_status === "ok" ? "bg-green-500 hover:bg-green-600" :
-                            lb.acme_status === "issuing" ? "bg-yellow-500 hover:bg-yellow-600" :
-                            lb.acme_status === "error" ? "bg-red-500 hover:bg-red-600" :
-                            ""
-                          }
-                          title={lb.acme_error || "Auto-SSL (ACME)"}
-                        >
-                          ACME {lb.acme_status === "issuing" ? "⏳" : lb.acme_status === "error" ? "⚠️" : ""}
-                        </Badge>
-                      ) : (
-                        <Badge variant="default">SSL</Badge>
-                      )
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {lb.proxy_protocol_enabled ? (
-                      <Badge variant="outline">PROXYv{lb.proxy_protocol_version}</Badge>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs text-muted-foreground">Total: {lb.metrics?.total_requests || 0}</span>
-                      <span className="text-xs text-muted-foreground">|</span>
-                      <span className="text-xs text-muted-foreground">Err: {lb.metrics?.error_rate_percent?.toFixed(1) || 0}%</span>
-                      <span className="text-xs text-muted-foreground">|</span>
-                      <span className="text-xs text-muted-foreground">Lat: {lb.metrics?.average_latency_ms || 0}ms</span>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right space-x-2">
-                    <Button variant="outline" size="sm" onClick={() => openEditModal(lb)}>Edit</Button>
-                    <Button variant="destructive" size="sm" onClick={() => handleDelete(lb.id)}>Delete</Button>
-                  </TableCell>
-                </TableRow>
+      {loaded && lbs.length === 0 ? (
+        <Recipes title="Пока ни одного балансировщика" text="Выберите рецепт — настройки подставятся сами, останется указать адреса узлов." />
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div role="group" aria-label="Фильтр по протоколу" className="inline-flex flex-wrap gap-1 rounded-xl border border-line bg-white p-1">
+              {filters.map((f) => (
+                <button
+                  key={f.key}
+                  type="button"
+                  aria-pressed={filter === f.key}
+                  onClick={() => setFilter(f.key)}
+                  className={`h-9 rounded-lg px-3.5 text-sm font-medium ${filter === f.key ? "bg-ink text-white" : "text-ink-2 hover:text-ink"}`}
+                >
+                  {f.label} <span className="opacity-70">{counts[f.key]}</span>
+                </button>
               ))}
-              {loadBalancers.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
-                    No load balancers found. Create one to get started.
-                  </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+            </div>
+            <label className="flex h-11 w-80 max-w-full items-center gap-2.5 rounded-xl border border-line bg-white px-3.5 text-ink-3 focus-within:border-cobalt">
+              <Search className="h-[18px] w-[18px]" aria-hidden="true" />
+              <span className="sr-only">Поиск по имени, адресу или узлу</span>
+              <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Имя, адрес или узел" className="min-w-0 flex-1 bg-transparent text-[15px] text-ink outline-none" />
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-stretch gap-6">
+            {shown.map((lb) => (
+              <Card key={lb.id} lb={lb} rps={rps[lb.id] ?? 0} history={history[lb.id] ?? []} onChanged={refresh} onDelete={() => setToDelete(lb)} />
+            ))}
+            {shown.length === 0 && <p className="text-ink-3">Под фильтр ничего не попало.</p>}
+          </div>
+
+          {editable && <Recipes title="Что ещё балансируем?" text="Выберите рецепт — настройки подставятся сами, останется указать узлы." />}
+        </>
+      )}
+
+      <ConfirmDialog
+        open={!!toDelete}
+        onOpenChange={(open) => !open && setToDelete(null)}
+        title={`Удалить «${toDelete?.name ?? ""}»?`}
+        text="Балансировщик сразу перестанет принимать трафик. Узлы и их настройки удалятся вместе с ним."
+        confirmLabel="Удалить"
+        danger
+        busy={deleting}
+        onConfirm={confirmDelete}
+      />
     </div>
   )
 }
