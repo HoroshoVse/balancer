@@ -34,6 +34,7 @@ func (e *Engine) Start() error {
 	})
 	e.healthChecker.Start()
 	Metrics.StartSnapshotLoop()
+	Host.Start()
 	return e.ReloadConfig()
 }
 

@@ -379,3 +379,16 @@ func TestTokensWithoutVersionStillWork(t *testing.T) {
 		t.Fatalf("legacy token: %d", rec.Code)
 	}
 }
+
+func TestHostMetrics(t *testing.T) {
+	env := newTestEnv(t)
+
+	if rec := env.do(http.MethodGet, "/api/v1/metrics/host", "", nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated: %d", rec.Code)
+	}
+	rec := env.do(http.MethodGet, "/api/v1/metrics/host", env.tokens[models.RoleViewer], nil)
+	var stats engine.HostStats
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &stats) != nil || !strings.Contains(rec.Body.String(), `"available"`) {
+		t.Fatalf("viewer: %d %s", rec.Code, rec.Body)
+	}
+}

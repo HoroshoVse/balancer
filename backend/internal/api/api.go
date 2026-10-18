@@ -70,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/system", s.authed(models.RoleAdmin, s.getSystem))
 	mux.HandleFunc("/api/v1/load-balancers/history", s.authed(models.RoleViewer, s.getLBMetricsHistory)) // Expected query param ?id=X
 	mux.HandleFunc("/api/v1/metrics/history", s.authed(models.RoleViewer, s.getGlobalMetricsHistory))
+	mux.HandleFunc("/api/v1/metrics/host", s.authed(models.RoleViewer, s.getHostMetrics))
 	mux.HandleFunc("/api/v1/logs", s.authed(models.RoleViewer, s.getLogs))
 	mux.HandleFunc("/api/v1/tools/test-connection", s.authed(models.RoleOperator, s.testConnection))
 
@@ -512,4 +513,9 @@ func (s *Server) getLBMetricsHistory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getGlobalMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, engine.Metrics.GetGlobalMetricsHistory())
+}
+
+// getHostMetrics reports CPU, memory and network load of the server itself.
+func (s *Server) getHostMetrics(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, engine.Host.Stats())
 }

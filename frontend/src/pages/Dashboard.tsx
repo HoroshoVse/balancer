@@ -7,7 +7,7 @@ import { activeNodes, algorithmLabel, formatNumber, kindLabel, kindOf, lbHealth,
 import { recipeList } from "@/lib/recipes"
 import { usePoll } from "@/lib/usePoll"
 import { Bars } from "@/components/Bars"
-import type { BackendNode, LoadBalancer, LogEntry, MetricsSnapshot } from "@/types"
+import type { BackendNode, HostStats, LoadBalancer, LogEntry, MetricsSnapshot } from "@/types"
 
 function Readout({ label, value, unit, children, last }: { label: string; value: string; unit: string; children: React.ReactNode; last?: boolean }) {
   return (
@@ -191,6 +191,134 @@ function Events({ logs }: { logs: LogEntry[] }) {
   )
 }
 
+// --- Server ---
+
+const MB = 1024 ** 2
+const GB = 1024 ** 3
+
+// From 1000 MB up in gigabytes, so a "1 GB" swap that the kernel reports a few KB short isn't "1 024 МБ"
+function bytesParts(bytes: number) {
+  return bytes >= 1000 * MB ? { value: formatNumber(bytes / GB, 1), unit: "ГБ" } : { value: formatNumber(bytes / MB, 0), unit: "МБ" }
+}
+
+function formatBytes(bytes: number) {
+  const { value, unit } = bytesParts(bytes)
+  return `${value} ${unit}`
+}
+
+// Interfaces are measured in bits per second, decimal units
+function formatBits(bytesPerSec: number) {
+  const bits = bytesPerSec * 8
+  const [value, unit] = bits >= 1e9 ? [bits / 1e9, "Гбит/с"] : bits >= 1e6 ? [bits / 1e6, "Мбит/с"] : bits >= 1e3 ? [bits / 1e3, "Кбит/с"] : [bits, "бит/с"]
+  return { value: formatNumber(value, value < 10 && bits >= 1e3 ? 1 : 0), unit }
+}
+
+function formatUptime(seconds: number) {
+  const days = Math.floor(seconds / 86400)
+  if (days > 0) return `${days} ${plural(days, "день", "дня", "дней")}`
+  const hours = Math.floor(seconds / 3600)
+  if (hours > 0) return `${hours} ${plural(hours, "час", "часа", "часов")}`
+  const minutes = Math.max(1, Math.floor(seconds / 60))
+  return `${minutes} ${plural(minutes, "минуту", "минуты", "минут")}`
+}
+
+const loadColor = (percent: number) => (percent >= 90 ? "bg-down" : percent >= 70 ? "bg-warn" : undefined)
+
+function HostPanel({ label, value, unit, chart, note, last }: { label: string; value: string; unit: string; chart: React.ReactNode; note: React.ReactNode; last?: boolean }) {
+  return (
+    <div className={`flex min-w-[240px] flex-1 flex-col gap-3 py-5 sm:px-6 sm:first:pl-0 sm:last:pr-0 ${last ? "" : "border-b border-line-soft sm:border-b-0 sm:border-r"}`}>
+      <span className="text-[13px] text-ink-3">{label}</span>
+      <span className="flex items-baseline gap-2">
+        <span className="font-display text-[40px] font-semibold leading-none tracking-tight">{value}</span>
+        <span className="text-sm text-ink-3">{unit}</span>
+      </span>
+      {chart}
+      <span className="text-[13px] leading-snug text-ink-2">{note}</span>
+    </div>
+  )
+}
+
+function Server({ stats }: { stats: HostStats | null }) {
+  const history = stats?.history ?? []
+  const last = history[history.length - 1]
+  const memTotal = stats?.mem_total ?? 0
+  const cpu = history.map((h) => h.cpu_percent)
+  const mem = history.map((h) => (memTotal > 0 ? (h.mem_used / memTotal) * 100 : 0))
+  const rx = history.map((h) => h.net_rx_bps)
+  const tx = history.map((h) => h.net_tx_bps)
+  const netScale = Math.max(...rx, ...tx, 0)
+  const memPercent = mem[mem.length - 1] ?? 0
+  const total = formatBits((last?.net_rx_bps ?? 0) + (last?.net_tx_bps ?? 0))
+  const memUsed = bytesParts(last?.mem_used ?? 0)
+  const rxNow = formatBits(last?.net_rx_bps ?? 0)
+  const txNow = formatBits(last?.net_tx_bps ?? 0)
+
+  return (
+    <section aria-labelledby="host-title" className="flex flex-col gap-1 rounded-[18px] border border-line bg-white px-7 pt-6 pb-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="flex flex-col gap-1">
+          <h2 id="host-title" className="font-display text-xl font-semibold tracking-tight">Сервер</h2>
+          <span className="text-sm text-ink-3">Нагрузка на машину, где работает балансировщик.</span>
+        </div>
+        {stats?.available && (
+          <span className="text-[13px] text-ink-3">
+            {stats.cpus} {plural(stats.cpus, "ядро", "ядра", "ядер")} · {formatBytes(memTotal)} · работает {formatUptime(stats.uptime_seconds)} · 5 минут, столбик = 5 с
+          </span>
+        )}
+      </div>
+
+      {!stats ? (
+        <p className="py-5 text-sm text-ink-3">Загружаю…</p>
+      ) : !stats.available ? (
+        <p className="py-5 text-sm text-ink-3">Показатели сервера собираются, только когда бэкенд работает на Linux.</p>
+      ) : !last ? (
+        <p className="py-5 text-sm text-ink-3">Собираю данные — первые точки появятся через несколько секунд.</p>
+      ) : (
+        <div className="flex flex-wrap">
+          <HostPanel
+            label="Процессор"
+            value={formatNumber(last.cpu_percent, 0)}
+            unit="%"
+            chart={<Bars values={cpu} scale={100} color="bg-cobalt" colorOf={(i) => loadColor(cpu[i])} height={56} gap={2} fade={false} slots={60} />}
+            note={<>Средняя загрузка <span className="font-mono">{stats.load.map((l) => formatNumber(l, 2)).join(" · ")}</span></>}
+          />
+          <HostPanel
+            label="Память"
+            value={memUsed.value}
+            unit={`${memUsed.unit} из ${formatBytes(memTotal)}`}
+            chart={<Bars values={mem} scale={100} color="bg-ink" colorOf={(i) => loadColor(mem[i])} height={56} gap={2} fade={false} slots={60} />}
+            note={
+              <>
+                Занято {formatNumber(memPercent, 0)} % · {stats.swap_total > 0 ? `своп ${formatBytes(stats.swap_used)} из ${formatBytes(stats.swap_total)}` : "своп выключен"}
+              </>
+            }
+          />
+          <HostPanel
+            label={stats.interface ? `Сеть · ${stats.interface}` : "Сеть"}
+            value={total.value}
+            unit={total.unit}
+            chart={
+              <div aria-hidden="true" className="flex flex-col gap-0.5">
+                <Bars values={rx} scale={netScale} color="bg-cobalt" height={27} gap={2} fade={false} slots={60} />
+                <div className="-scale-y-100">
+                  <Bars values={tx} scale={netScale} color="bg-ok" height={27} gap={2} fade={false} slots={60} />
+                </div>
+              </div>
+            }
+            note={
+              <span className="flex flex-wrap gap-x-4">
+                <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-cobalt" />вход {rxNow.value} {rxNow.unit}</span>
+                <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-ok" />выход {txNow.value} {txNow.unit}</span>
+              </span>
+            }
+            last
+          />
+        </div>
+      )}
+    </section>
+  )
+}
+
 // --- Page ---
 
 export default function Dashboard() {
@@ -206,6 +334,7 @@ export default function Dashboard() {
     ids.join(","),
   )
   const logs = usePoll(() => api<LogEntry[]>("/logs"), [] as LogEntry[], "logs", 10000)
+  const host = usePoll(() => api<HostStats>("/metrics/host"), null as HostStats | null, "host")
 
   const health = lbs.map(lbHealth)
   const nodesUp = health.reduce((s, h) => s + h.up, 0)
@@ -356,6 +485,8 @@ export default function Dashboard() {
           </div>
         </>
       )}
+
+      <Server stats={host} />
     </div>
   )
 }

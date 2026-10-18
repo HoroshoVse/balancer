@@ -71,6 +71,26 @@ export interface MetricsSnapshot {
   error_rate: number
 }
 
+export interface HostSnapshot {
+  ts: number
+  cpu_percent: number
+  mem_used: number // bytes
+  net_rx_bps: number // bytes per second
+  net_tx_bps: number
+}
+
+export interface HostStats {
+  available: boolean
+  cpus: number
+  load: [number, number, number]
+  mem_total: number
+  swap_total: number
+  swap_used: number
+  interface: string
+  uptime_seconds: number
+  history: HostSnapshot[]
+}
+
 export interface LogEntry {
   timestamp: string
   level: string
