@@ -2,104 +2,190 @@ package engine
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
+	"errors"
 	"fmt"
+	"html"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-
-
 	"github.com/balancer/backend/internal/models"
 	"github.com/caddyserver/certmagic"
-	"github.com/pires/go-proxyproto"
 	"github.com/quic-go/quic-go/http3"
-	"gorm.io/gorm"
 )
+
+const (
+	statusStarting = "starting"
+	statusRunning  = "running"
+	statusError    = "error"
+	statusStopped  = "stopped"
+
+	stickyCookieName      = "BALANCER_SESSION"
+	udpSessionIdleTimeout = 60 * time.Second
+	stopTimeout           = 5 * time.Second
+
+	defaultConnectTimeout = 5 * time.Second
+	defaultHTTPIdle       = 120 * time.Second
+)
+
+// httpRedirectPort is where the HTTP->HTTPS redirect listens (var for tests).
+var httpRedirectPort = models.HTTPRedirectPort
+
+// msOr converts a millisecond setting, using def when it is unset.
+func msOr(ms int, def time.Duration) time.Duration {
+	if ms <= 0 {
+		return def
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// context key type to avoid collisions
+type ctxKey string
+
+const (
+	ctxKeyBackend    ctxKey = "backend"
+	ctxKeyClientAddr ctxKey = "client_addr"
+)
+
+type instanceState struct {
+	status string
+	err    string
+}
 
 type LoadBalancerInstance struct {
 	Config        models.LoadBalancer
-	db            *gorm.DB
 	healthChecker *HealthChecker
-	
-	httpServer  *http.Server
-	httpsServer *http.Server
-	http3Server *http3.Server
-	tcpListener net.Listener
-	transport   *backendTransport // reference to close idle conns on failover
-	
-	backends atomic.Value // Store slice of *models.BackendServer
-	strategy Strategy
-	
-	cancel   context.CancelFunc
-	
-	acmeStatus atomic.Value // Store string
-	acmeError  atomic.Value // Store string
-	failoverState int32 // 0: init, 1: primary, 2: backup, 3: all down
 
-	udpSessions sync.Map // Map clientAddr(string) -> *udpSession
+	// ctx is cancelled by Stop; done is closed once Start has returned
+	// and every listening socket is closed.
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+	state  atomic.Value // instanceState
+
+	http3Server *http3.Server
+	transport   *backendTransport
+
+	backends     atomic.Value // []*models.BackendServer
+	backendNames atomic.Value // string, last logged set of active backends
+	strategy     Strategy
+	conns        connCounter
+
+	acmeStatus    atomic.Value // Store string
+	acmeError     atomic.Value // Store string
+	failoverState int32        // 0: init, 1: primary, 2: backup, 3: all down
+
+	udpSessions sync.Map                // Map clientAddr(string) -> *udpSession
+	dns         atomic.Pointer[dnsProxy] // set while serving in DNS mode
+	acmeIssuer  atomic.Pointer[certmagic.ACMEIssuer]
 }
 
 type udpSession struct {
-	conn     net.Conn
-	lastSeen int64 // atomic unix timestamp
+	conn      net.Conn
+	backend   *models.BackendServer
+	lastSeen  int64 // atomic unix timestamp
+	closeOnce sync.Once
 }
 
-func NewLoadBalancerInstance(config models.LoadBalancer, db *gorm.DB, hc *HealthChecker) *LoadBalancerInstance {
+func NewLoadBalancerInstance(config models.LoadBalancer, hc *HealthChecker) *LoadBalancerInstance {
+	ctx, cancel := context.WithCancel(context.Background())
 	inst := &LoadBalancerInstance{
 		Config:        config,
-		db:            db,
 		healthChecker: hc,
+		ctx:           ctx,
+		cancel:        cancel,
+		done:          make(chan struct{}),
 	}
+	inst.state.Store(instanceState{status: statusStarting})
 	inst.acmeStatus.Store("")
 	inst.acmeError.Store("")
-
-	switch config.Algorithm {
-	case "round_robin":
-		inst.strategy = &RoundRobin{}
-	case "least_conn":
-		inst.strategy = &LeastConnections{}
-	case "weighted_round_robin":
-		inst.strategy = &WeightedRoundRobin{}
-	case "ip_hash":
-		inst.strategy = &IPHash{}
-	case "failover":
-		inst.strategy = &Failover{}
-	default:
-		inst.strategy = &RoundRobin{} // Default
+	inst.backends.Store([]*models.BackendServer{})
+	inst.backendNames.Store("")
+	inst.strategy = newStrategy(config.Algorithm, &inst.conns)
+	inst.transport = &backendTransport{
+		lbID:                 config.ID,
+		proxyProtocolEnabled: config.ProxyProtocolEnabled,
+		proxyProtocolVersion: config.ProxyProtocolVersion,
+		http2Enabled:         config.BackendHTTP2Enabled,
+		connectTimeout:       msOr(config.ConnectTimeout, defaultConnectTimeout),
+		responseTimeout:      msOr(config.ResponseTimeout, 0),
 	}
-
 	return inst
 }
 
+// Start serves until Stop is called. It returns an error if the listener
+// could not be started or failed; the instance is then in the error state.
 func (l *LoadBalancerInstance) Start() error {
-	ctx, cancel := context.WithCancel(context.Background())
-	l.cancel = cancel
+	defer close(l.done)
+	if l.ctx.Err() != nil {
+		l.setState(statusStopped, "")
+		return nil
+	}
 
 	l.updateBackends()
 
-	if l.Config.Protocol == "tcp" {
-		return l.startTCP(ctx)
-	} else if l.Config.Protocol == "udp" {
-		return l.startUDP(ctx)
-	} else if l.Config.Protocol == "https" && !l.Config.SSLEnabled {
+	var err error
+	switch {
+	case l.Config.Protocol == "tcp":
+		err = l.startTCP()
+	case l.Config.Protocol == "udp" && l.Config.DNSMode:
+		err = l.startDNS()
+	case l.Config.Protocol == "udp":
+		err = l.startUDP()
+	case l.Config.Protocol == "https" && !l.Config.SSLEnabled:
 		// TLS Passthrough mode: user selected HTTPS but disabled SSL termination on the LB
 		Logger.InfoLB(l.Config.Name, fmt.Sprintf("Running %s in TLS Passthrough (TCP) mode", l.Config.Name))
-		return l.startTCP(ctx)
+		err = l.startTCP()
+	default:
+		err = l.startHTTP()
 	}
-	return l.startHTTP(ctx)
+
+	if err != nil && l.ctx.Err() == nil {
+		l.cancel() // tear down whatever part did start
+		l.setState(statusError, err.Error())
+		return err
+	}
+	l.setState(statusStopped, "")
+	return nil
+}
+
+// Stop shuts the instance down and waits until its ports are released.
+func (l *LoadBalancerInstance) Stop() {
+	l.cancel()
+	select {
+	case <-l.done:
+	case <-time.After(stopTimeout):
+		Logger.WarnLB(l.Config.Name, fmt.Sprintf("Timed out waiting for %s to stop", l.Config.Name))
+	}
+}
+
+func (l *LoadBalancerInstance) setState(status, errStr string) {
+	l.state.Store(instanceState{status: status, err: errStr})
+}
+
+// Status returns the runtime state and the last start error, if any.
+func (l *LoadBalancerInstance) Status() (string, string) {
+	s := l.state.Load().(instanceState)
+	return s.status, s.err
+}
+
+func (l *LoadBalancerInstance) listenAddr() string {
+	return backendAddr(l.Config.ListenIP, l.Config.ListenPort)
+}
+
+func (l *LoadBalancerInstance) stickyIP() bool {
+	return l.Config.StickySessionsEnabled && l.Config.StickySessionType == "ip"
+}
+
+func (l *LoadBalancerInstance) stickyCookie() bool {
+	return l.Config.StickySessionsEnabled && l.Config.StickySessionType == "cookie"
 }
 
 func (l *LoadBalancerInstance) updateBackends() {
@@ -131,162 +217,253 @@ func (l *LoadBalancerInstance) updateBackends() {
 		activeBackends = primaryBackends
 		newState = 1 // primary
 	} else if len(backupBackends) > 0 {
-		Logger.WarnLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: all primary backends DOWN, switching to backup nodes", l.Config.Name))
 		activeBackends = backupBackends
 		newState = 2 // backup
 	} else {
-		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("[CRITICAL] %s: ALL backends (primary + backup) are DOWN", l.Config.Name))
 		newState = 3 // all down
 	}
 
-	// Send failover alerts
+	// Log and alert only on transitions
 	oldState := atomic.SwapInt32(&l.failoverState, newState)
-	if oldState != 0 && oldState != newState && l.healthChecker != nil {
-		if newState == 1 && oldState != 1 {
-			msg := fmt.Sprintf("✅ Load Balancer %s: Primary nodes recovered. Switched back to Primary nodes.", l.Config.Name)
-			l.healthChecker.SendTelegramAlert(msg)
-		} else if newState == 2 && oldState == 1 {
-			msg := fmt.Sprintf("⚠️ Load Balancer %s: All primary nodes are DOWN. Switched to Backup nodes.", l.Config.Name)
-			l.healthChecker.SendTelegramAlert(msg)
-		} else if newState == 3 && oldState != 3 {
-			msg := fmt.Sprintf("❌ Load Balancer %s: CRITICAL! All nodes (primary and backup) are DOWN!", l.Config.Name)
-			l.healthChecker.SendTelegramAlert(msg)
+	if oldState != newState {
+		name := html.EscapeString(l.Config.Name)
+		switch newState {
+		case 1:
+			if oldState != 0 {
+				Logger.InfoLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: primary backends recovered", l.Config.Name))
+				l.alert(fmt.Sprintf("✅ <b>%s</b>: основные узлы вернулись, резерв снова ждёт.", name))
+			}
+		case 2:
+			Logger.WarnLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: all primary backends DOWN, switching to backup nodes", l.Config.Name))
+			if oldState == 1 {
+				l.alert(fmt.Sprintf("⚠️ <b>%s</b>: основные узлы не отвечают — трафик переключён на резерв.", name))
+			}
+		case 3:
+			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("[CRITICAL] %s: ALL backends (primary + backup) are DOWN", l.Config.Name))
+			if oldState != 0 {
+				l.alert(fmt.Sprintf("❌ <b>%s</b>: недоступны все узлы, включая резерв!", name))
+			}
 		}
 	}
 
-	// Build names for logging
 	names := make([]string, len(activeBackends))
+	active := make(map[uint]bool, len(activeBackends))
 	for i, b := range activeBackends {
-		names[i] = fmt.Sprintf("%s(%s:%d)", b.Name, b.Address, b.Port)
+		names[i] = fmt.Sprintf("%s(%s)", b.Name, backendAddr(b.Address, b.Port))
+		active[b.ID] = true
+	}
+	if joined := strings.Join(names, ", "); joined != l.backendNames.Swap(joined) && len(activeBackends) > 0 {
+		Logger.InfoLB(l.Config.Name, fmt.Sprintf("[BACKENDS] %s: active backends updated to: [%s]", l.Config.Name, joined))
 	}
 
-	if len(activeBackends) == 0 {
-		l.backends.Store([]*models.BackendServer{})
-	} else {
-		Logger.InfoLB(l.Config.Name, fmt.Sprintf("[BACKENDS] %s: active backends updated to: %v", l.Config.Name, names))
-		l.backends.Store(activeBackends)
+	if activeBackends == nil {
+		activeBackends = []*models.BackendServer{}
 	}
+	l.backends.Store(activeBackends)
 
 	// Close idle HTTP connections so requests are forced to reconnect
 	// to the new set of active backends (critical for failover/failback)
-	if l.transport != nil && l.transport.inner != nil {
-		l.transport.inner.CloseIdleConnections()
+	l.transport.closeIdleConnections()
+
+	// Move UDP flows off backends that are no longer active
+	l.udpSessions.Range(func(key, value interface{}) bool {
+		if sess := value.(*udpSession); !active[sess.backend.ID] {
+			l.closeUDPSession(key.(string), sess)
+		}
+		return true
+	})
+}
+
+func (l *LoadBalancerInstance) alert(msg string) {
+	if l.healthChecker != nil {
+		l.healthChecker.SendTelegramAlert(msg)
 	}
 }
 
-func (l *LoadBalancerInstance) startTCP(ctx context.Context) error {
-	addr := fmt.Sprintf("%s:%d", l.Config.ListenIP, l.Config.ListenPort)
+// pickBackend chooses a backend for a new connection and reserves a
+// connection slot on it. Callers must call releaseBackend when done.
+// preferredID (e.g. from a sticky cookie) wins if that backend is available.
+func (l *LoadBalancerInstance) pickBackend(clientIP string, preferredID uint) *models.BackendServer {
+	backends := l.backends.Load().([]*models.BackendServer)
+	candidates := make([]*models.BackendServer, 0, len(backends))
+	for _, b := range backends {
+		if b.MaxConns <= 0 || l.conns.Active(b.ID) < int64(b.MaxConns) {
+			candidates = append(candidates, b)
+		}
+	}
+
+	for len(candidates) > 0 {
+		var target *models.BackendServer
+		if preferredID != 0 {
+			for _, b := range candidates {
+				if b.ID == preferredID {
+					target = b
+					break
+				}
+			}
+			preferredID = 0
+		}
+		if target == nil {
+			if l.stickyIP() {
+				target = candidates[hashIP(clientIP)%uint32(len(candidates))]
+			} else {
+				target = l.strategy.Next(candidates, clientIP)
+			}
+		}
+		if target == nil {
+			return nil
+		}
+		if l.conns.tryAcquire(target.ID, target.MaxConns) {
+			return target
+		}
+		// Hit max_conns concurrently; try the remaining nodes
+		remaining := candidates[:0]
+		for _, b := range candidates {
+			if b.ID != target.ID {
+				remaining = append(remaining, b)
+			}
+		}
+		candidates = remaining
+	}
+	return nil
+}
+
+func (l *LoadBalancerInstance) releaseBackend(b *models.BackendServer) {
+	l.conns.release(b.ID)
+}
+
+// nextBackoff mirrors net/http's accept retry delay.
+func nextBackoff(d time.Duration) time.Duration {
+	if d == 0 {
+		return 5 * time.Millisecond
+	}
+	if d *= 2; d > time.Second {
+		return time.Second
+	}
+	return d
+}
+
+func (l *LoadBalancerInstance) startTCP() error {
+	addr := l.listenAddr()
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
-	l.tcpListener = listener
-
+	l.setState(statusRunning, "")
 	Logger.InfoLB(l.Config.Name, fmt.Sprintf("TCP LoadBalancer %s listening on %s", l.Config.Name, addr))
+	return l.serveTCP(listener)
+}
 
+// serveTCP accepts connections until the instance stops.
+func (l *LoadBalancerInstance) serveTCP(listener net.Listener) error {
 	go func() {
-		<-ctx.Done()
+		<-l.ctx.Done()
 		listener.Close()
 	}()
 
+	var delay time.Duration
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			select {
-			case <-ctx.Done():
+			if l.ctx.Err() != nil {
 				return nil // Graceful shutdown
-			default:
-				Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Accept error on %s: %v", l.Config.Name, err))
-				continue
 			}
+			delay = nextBackoff(delay)
+			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Accept error on %s: %v; retrying in %v", l.Config.Name, err, delay))
+			select {
+			case <-time.After(delay):
+			case <-l.ctx.Done():
+				return nil
+			}
+			continue
 		}
-
+		delay = 0
 		go l.handleTCPConnection(conn)
 	}
 }
 
 func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
-	backends := l.backends.Load().([]*models.BackendServer)
-	clientIP, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
-	target := l.strategy.Next(backends, clientIP)
-	if target == nil {
-		clientConn.Close()
-		return
-	}
+	defer clientConn.Close()
 
-	targetAddr := fmt.Sprintf("%s:%d", target.Address, target.Port)
-	start := time.Now()
-	backendConn, err := net.DialTimeout("tcp", targetAddr, 5*time.Second)
-	dialLatency := time.Since(start)
-	if err != nil {
-		Metrics.RecordBackendRequest(target.ID, dialLatency, true)
-		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
-		clientConn.Close()
+	clientIP, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
+	target := l.pickBackend(clientIP, 0)
+	if target == nil {
+		Metrics.RecordRequest(l.Config.ID, 0, true)
 		return
 	}
-	Metrics.RecordBackendRequest(target.ID, dialLatency, false)
+	defer l.releaseBackend(target)
+
+	targetAddr := backendAddr(target.Address, target.Port)
+	start := time.Now()
+	backendConn, err := net.DialTimeout("tcp", targetAddr, msOr(l.Config.ConnectTimeout, defaultConnectTimeout))
+	dialLatency := time.Since(start)
+	Metrics.RecordBackendRequest(target.ID, dialLatency, err != nil)
+	Metrics.RecordRequest(l.Config.ID, dialLatency, err != nil)
+	if err != nil {
+		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
+		return
+	}
+	defer backendConn.Close()
+
+	// The PROXY header goes first on the wire, before any TLS handshake
+	if l.Config.ProxyProtocolEnabled {
+		header := buildProxyHeader(l.Config.ProxyProtocolVersion, clientConn.RemoteAddr(), clientConn.LocalAddr())
+		if _, err := header.WriteTo(backendConn); err != nil {
+			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to write PROXY protocol header: %v", err))
+			return
+		}
+	}
 
 	// If TLSEnabled is true for this backend, wrap the connection in TLS
 	if target.TLSEnabled {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: true, // We don't verify backend certs by default
-		}
-		if target.SNI != "" {
-			tlsConfig.ServerName = target.SNI
-		}
-		backendConn = tls.Client(backendConn, tlsConfig)
+		backendConn = newBackendTLSClient(backendConn, target.SNI, false)
 	}
 
-	if l.Config.ProxyProtocolEnabled {
-		clientIP, clientPort, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
-		destIP, destPort, _ := net.SplitHostPort(clientConn.LocalAddr().String())
-		
-		header := &proxyproto.Header{
-			Version:           byte(l.Config.ProxyProtocolVersion),
-			Command:           proxyproto.PROXY,
-			TransportProtocol: proxyproto.TCPv4,
-			SourceAddr: &net.TCPAddr{
-				IP:   net.ParseIP(clientIP),
-				Port: parsePort(clientPort),
-			},
-			DestinationAddr: &net.TCPAddr{
-				IP:   net.ParseIP(destIP),
-				Port: parsePort(destPort),
-			},
-		}
-		
-		if header.SourceAddr.(*net.TCPAddr).IP.To4() == nil {
-			header.TransportProtocol = proxyproto.TCPv6
-		}
-		
-		_, err = header.WriteTo(backendConn)
-		if err != nil {
-			Logger.Error(fmt.Sprintf("Failed to write PROXY protocol header: %v", err))
-			backendConn.Close()
-			clientConn.Close()
+	proxyStreams(clientConn, backendConn, msOr(l.Config.IdleTimeout, 0))
+}
+
+// proxyStreams copies both ways until either side closes or, when idle > 0,
+// no data has moved in either direction for that long.
+func proxyStreams(a, b net.Conn, idle time.Duration) {
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+
+	copyDir := func(dst, src net.Conn) {
+		defer dst.Close() // unblocks the opposite direction
+		if idle <= 0 {
+			io.Copy(dst, src) // keeps the kernel splice fast path
 			return
+		}
+		buf := make([]byte, 32*1024)
+		for {
+			src.SetReadDeadline(time.Now().Add(idle))
+			n, err := src.Read(buf)
+			if n > 0 {
+				lastActivity.Store(time.Now().UnixNano())
+				dst.SetWriteDeadline(time.Now().Add(idle))
+				if _, werr := dst.Write(buf[:n]); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				var ne net.Error
+				if errors.As(err, &ne) && ne.Timeout() && time.Since(time.Unix(0, lastActivity.Load())) < idle {
+					continue // quiet here, but the other direction is active
+				}
+				return
+			}
 		}
 	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		io.Copy(backendConn, clientConn)
-		backendConn.Close()
-	}()
-	go func() {
-		defer wg.Done()
-		io.Copy(clientConn, backendConn)
-		clientConn.Close()
-	}()
-
+	go func() { defer wg.Done(); copyDir(b, a) }()
+	go func() { defer wg.Done(); copyDir(a, b) }()
 	wg.Wait()
 }
 
-func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
-	addr := fmt.Sprintf("%s:%d", l.Config.ListenIP, l.Config.ListenPort)
+func (l *LoadBalancerInstance) startUDP() error {
+	addr := l.listenAddr()
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return err
@@ -296,30 +473,30 @@ func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
+	conn.SetReadBuffer(4 << 20) // absorb bursts instead of dropping datagrams
+	l.setState(statusRunning, "")
 	Logger.InfoLB(l.Config.Name, fmt.Sprintf("UDP LoadBalancer %s listening on %s", l.Config.Name, addr))
 
+	idle := msOr(l.Config.IdleTimeout, udpSessionIdleTimeout)
+	sweep := min(max(idle/2, time.Second), 15*time.Second)
 	go func() {
-		cleanupTicker := time.NewTicker(30 * time.Second)
+		cleanupTicker := time.NewTicker(sweep)
 		defer cleanupTicker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-l.ctx.Done():
+				conn.Close()
 				l.udpSessions.Range(func(key, value interface{}) bool {
-					sess := value.(*udpSession)
-					sess.conn.Close()
+					l.closeUDPSession(key.(string), value.(*udpSession))
 					return true
 				})
-				conn.Close()
 				return
 			case <-cleanupTicker.C:
-				now := time.Now().Unix()
+				cutoff := time.Now().Add(-idle).Unix()
 				l.udpSessions.Range(func(key, value interface{}) bool {
 					sess := value.(*udpSession)
-					lastSeen := atomic.LoadInt64(&sess.lastSeen)
-					if now-lastSeen > 60 {
-						sess.conn.Close()
-						l.udpSessions.Delete(key)
+					if atomic.LoadInt64(&sess.lastSeen) < cutoff {
+						l.closeUDPSession(key.(string), sess)
 					}
 					return true
 				})
@@ -327,23 +504,23 @@ func (l *LoadBalancerInstance) startUDP(ctx context.Context) error {
 		}
 	}()
 
-	buf := make([]byte, 65507)
+	// Datagrams are handled inline: it keeps per-client ordering and
+	// avoids racing session creation for the same client.
+	buf := make([]byte, 65535)
+	var delay time.Duration
 	for {
 		n, clientAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			select {
-			case <-ctx.Done():
+			if l.ctx.Err() != nil {
 				return nil // Graceful shutdown
-			default:
-				Logger.ErrorLB(l.Config.Name, fmt.Sprintf("ReadFromUDP error on %s: %v", l.Config.Name, err))
-				continue
 			}
+			delay = nextBackoff(delay)
+			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("ReadFromUDP error on %s: %v", l.Config.Name, err))
+			time.Sleep(delay)
+			continue
 		}
-
-		data := make([]byte, n)
-		copy(data, buf[:n])
-		
-		go l.handleUDPPacket(data, clientAddr, conn)
+		delay = 0
+		l.handleUDPPacket(buf[:n], clientAddr, conn)
 	}
 }
 
@@ -352,61 +529,37 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 
 	payload := data
 	if l.Config.ProxyProtocolEnabled {
-		clientIP, clientPort, _ := net.SplitHostPort(clientAddr.String())
-		destIP, destPort, _ := net.SplitHostPort(fmt.Sprintf("%s:%d", l.Config.ListenIP, l.Config.ListenPort))
-		
-		header := &proxyproto.Header{
-			Version:           byte(l.Config.ProxyProtocolVersion),
-			Command:           proxyproto.PROXY,
-			TransportProtocol: proxyproto.UDPv4,
-			SourceAddr: &net.UDPAddr{
-				IP:   net.ParseIP(clientIP),
-				Port: parsePort(clientPort),
-			},
-			DestinationAddr: &net.UDPAddr{
-				IP:   net.ParseIP(destIP),
-				Port: parsePort(destPort),
-			},
-		}
-		if clientAddr.IP.To4() == nil {
-			header.TransportProtocol = proxyproto.UDPv6
-		}
-
+		header := buildProxyHeader(l.Config.ProxyProtocolVersion, clientAddr, clientConn.LocalAddr())
 		headerBytes, err := header.Format()
 		if err == nil {
-			payload = append(headerBytes, payload...)
+			payload = append(headerBytes, data...)
 		} else {
 			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to format PROXY protocol header: %v", err))
 		}
 	}
 
-	// Check for existing session
+	// Existing session
 	if val, ok := l.udpSessions.Load(clientKey); ok {
 		sess := val.(*udpSession)
 		atomic.StoreInt64(&sess.lastSeen, time.Now().Unix())
-		_, err := sess.conn.Write(payload)
-		if err != nil {
-			sess.conn.Close()
-			// Only delete if it's still our session
-			if cur, ok := l.udpSessions.Load(clientKey); ok && cur.(*udpSession) == sess {
-				l.udpSessions.Delete(clientKey)
-			}
+		if _, err := sess.conn.Write(payload); err != nil {
+			l.closeUDPSession(clientKey, sess)
 		}
 		return
 	}
 
 	// Create new session
-	backends := l.backends.Load().([]*models.BackendServer)
-	target := l.strategy.Next(backends, clientAddr.IP.String())
+	target := l.pickBackend(clientAddr.IP.String(), 0)
 	if target == nil {
 		Metrics.RecordRequest(l.Config.ID, 0, true)
 		return
 	}
 
-	targetAddr := fmt.Sprintf("%s:%d", target.Address, target.Port)
+	targetAddr := backendAddr(target.Address, target.Port)
 	start := time.Now()
 	backendConn, err := net.Dial("udp", targetAddr)
 	if err != nil {
+		l.releaseBackend(target)
 		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
 		Metrics.RecordRequest(l.Config.ID, time.Since(start), true)
 		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
@@ -415,478 +568,267 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 
 	sess := &udpSession{
 		conn:     backendConn,
+		backend:  target,
 		lastSeen: time.Now().Unix(),
 	}
 	l.udpSessions.Store(clientKey, sess)
 
-	// Write the initial packet
 	_, err = backendConn.Write(payload)
+	Metrics.RecordBackendRequest(target.ID, time.Since(start), err != nil)
+	Metrics.RecordRequest(l.Config.ID, time.Since(start), err != nil)
 	if err != nil {
-		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
-		Metrics.RecordRequest(l.Config.ID, time.Since(start), true)
-		backendConn.Close()
-		l.udpSessions.Delete(clientKey)
+		l.closeUDPSession(clientKey, sess)
 		return
 	}
-	
-	Metrics.RecordBackendRequest(target.ID, time.Since(start), false)
-	Metrics.RecordRequest(l.Config.ID, time.Since(start), false)
 
-	// Goroutine to read from backend and write back to client
-	go func() {
-		buf := make([]byte, 65507)
-		for {
-			n, err := backendConn.Read(buf)
-			if err != nil {
-				backendConn.Close()
-				// Only delete the session if it's still ours (not replaced by a newer session)
-				if cur, ok := l.udpSessions.Load(clientKey); ok && cur.(*udpSession) == sess {
-					l.udpSessions.Delete(clientKey)
-				}
-				return
-			}
-			atomic.StoreInt64(&sess.lastSeen, time.Now().Unix())
-			_, err = clientConn.WriteToUDP(buf[:n], clientAddr)
-			if err != nil {
-				backendConn.Close()
-				if cur, ok := l.udpSessions.Load(clientKey); ok && cur.(*udpSession) == sess {
-					l.udpSessions.Delete(clientKey)
-				}
-				return
-			}
+	go l.relayUDPReplies(clientKey, sess, clientConn, clientAddr)
+}
+
+// relayUDPReplies forwards backend responses to the client until the session closes.
+func (l *LoadBalancerInstance) relayUDPReplies(clientKey string, sess *udpSession, clientConn *net.UDPConn, clientAddr *net.UDPAddr) {
+	defer l.closeUDPSession(clientKey, sess)
+	buf := make([]byte, 65535)
+	for {
+		n, err := sess.conn.Read(buf)
+		if err != nil {
+			return
 		}
-	}()
+		atomic.StoreInt64(&sess.lastSeen, time.Now().Unix())
+		if _, err := clientConn.WriteToUDP(buf[:n], clientAddr); err != nil {
+			return
+		}
+	}
 }
 
-func parsePort(s string) int {
-	var p int
-	fmt.Sscanf(s, "%d", &p)
-	return p
+func (l *LoadBalancerInstance) closeUDPSession(clientKey string, sess *udpSession) {
+	sess.closeOnce.Do(func() {
+		sess.conn.Close()
+		l.releaseBackend(sess.backend)
+	})
+	l.udpSessions.CompareAndDelete(clientKey, sess)
 }
 
-func (l *LoadBalancerInstance) startHTTP(ctx context.Context) error {
-	addr := fmt.Sprintf("%s:%d", l.Config.ListenIP, l.Config.ListenPort)
-	
+func (l *LoadBalancerInstance) startHTTP() error {
+	addr := l.listenAddr()
+
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
-			backends := l.backends.Load().([]*models.BackendServer)
-			clientIP, _, err := net.SplitHostPort(req.RemoteAddr)
-			if err != nil {
-				clientIP = req.RemoteAddr
-			}
-			target := l.strategy.Next(backends, clientIP)
+			target := req.Context().Value(ctxKeyBackend).(*models.BackendServer)
 
-			// Sticky Sessions Support
-			if l.Config.StickySessionsEnabled {
-				cookieName := "BALANCER_SESSION"
-				if l.Config.StickySessionType != "" {
-					cookieName = l.Config.StickySessionType
-				}
-				if cookie, err := req.Cookie(cookieName); err == nil && cookie.Value != "" {
-					// Check if this backend is still active and healthy
-					for _, b := range backends {
-						if fmt.Sprintf("%d", b.ID) == cookie.Value {
-							target = b // Override the strategy
-							break
-						}
-					}
-				}
+			req.URL.Scheme = "http"
+			if target.TLSEnabled {
+				req.URL.Scheme = "https"
 			}
-
-			if target == nil {
-				return
-			}
-			
-			// Store selected backend in request context for the Transport
-			ctx := context.WithValue(req.Context(), "selected_backend", target)
-			ctx = context.WithValue(ctx, ctxKeyRequestHost, req.Host) // Stash SNI
-			*req = *req.WithContext(ctx)
-			
-			scheme := "http"
-			if l.Config.Protocol == "https" || target.TLSEnabled { 
-				scheme = "https"
-			}
-			
-			req.URL.Scheme = scheme
 			// req.URL.Host determines the http.Transport connection pool key.
 			// It MUST be the backend's address so connections are pooled per-backend.
-			req.URL.Host = fmt.Sprintf("%s:%d", target.Address, target.Port)
-			// req.Host determines the Host header sent to the backend.
-			// We leave req.Host untouched to preserve the original client requested domain.
-			req.URL.Path = req.URL.Path
+			req.URL.Host = backendAddr(target.Address, target.Port)
+			// req.Host is the Host header sent to the backend: the client's
+			// requested domain unless the node overrides it.
+			if target.SNI != "" {
+				req.Host = target.SNI
+			}
 
-			if err == nil {
+			if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
 				req.Header.Set("X-Real-IP", clientIP)
-				if req.Header.Get("X-Forwarded-For") == "" {
-					req.Header.Set("X-Forwarded-For", clientIP)
-				}
 			}
+			if req.TLS != nil {
+				req.Header.Set("X-Forwarded-Proto", "https")
+			} else {
+				req.Header.Set("X-Forwarded-Proto", "http")
+			}
+			// X-Forwarded-For is appended by ReverseProxy itself.
 		},
-		Transport: func() http.RoundTripper {
-			l.transport = &backendTransport{
-				lbID:     l.Config.ID,
-				strategy: l.strategy,
-				proxyProtocolEnabled: l.Config.ProxyProtocolEnabled,
-				proxyProtocolVersion: l.Config.ProxyProtocolVersion,
-				http2Enabled:         l.Config.Protocol == "https" || l.Config.BackendHTTP2Enabled,
-			}
-			return l.transport
-		}(),
+		Transport: l.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(err, context.Canceled) {
+				return // client went away
+			}
 			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Proxy error to %s: %v", r.URL.String(), err))
-			w.WriteHeader(http.StatusBadGateway)
-			w.Write([]byte("502 Bad Gateway - Backend node is unreachable or dropped the connection"))
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				http.Error(w, "504 Gateway Timeout - Backend node did not respond in time", http.StatusGatewayTimeout)
+				return
+			}
+			http.Error(w, "502 Bad Gateway - Backend node is unreachable or dropped the connection", http.StatusBadGateway)
 		},
 		ModifyResponse: func(resp *http.Response) error {
-			if l.Config.StickySessionsEnabled {
-				if target, ok := resp.Request.Context().Value("selected_backend").(*models.BackendServer); ok {
-					cookieName := "BALANCER_SESSION"
-					if l.Config.StickySessionType != "" {
-						cookieName = l.Config.StickySessionType
-					}
-					cookieVal := fmt.Sprintf("%d", target.ID)
-					reqCookie, err := resp.Request.Cookie(cookieName)
-					// Set cookie if it wasn't present or if we routed to a different node
-					if err != nil || reqCookie.Value != cookieVal {
-						c := &http.Cookie{
-							Name:     cookieName,
-							Value:    cookieVal,
-							Path:     "/",
-							HttpOnly: true,
-							MaxAge:   86400, // 24 hours
-						}
-						if v := c.String(); v != "" {
-							resp.Header.Add("Set-Cookie", v)
-						}
-					}
-				}
+			if !l.stickyCookie() {
+				return nil
 			}
+			target, ok := resp.Request.Context().Value(ctxKeyBackend).(*models.BackendServer)
+			if !ok {
+				return nil
+			}
+			cookieVal := strconv.FormatUint(uint64(target.ID), 10)
+			// Set cookie if it wasn't present or if we routed to a different node
+			if c, err := resp.Request.Cookie(stickyCookieName); err == nil && c.Value == cookieVal {
+				return nil
+			}
+			c := &http.Cookie{
+				Name:     stickyCookieName,
+				Value:    cookieVal,
+				Path:     "/",
+				HttpOnly: true,
+				Secure:   l.Config.Protocol == "https",
+				SameSite: http.SameSiteLaxMode,
+				MaxAge:   86400, // 24 hours
+			}
+			resp.Header.Add("Set-Cookie", c.String())
 			return nil
 		},
 	}
 
-	handler := http.Handler(proxy)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if l.http3Server != nil && r.ProtoMajor < 3 {
+			l.http3Server.SetQuicHeaders(w.Header()) // advertise HTTP/3 via Alt-Svc
+		}
 
-	// TLS / ACME Setup
+		clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			clientIP = r.RemoteAddr
+		}
+		var preferredID uint
+		if l.stickyCookie() {
+			if c, err := r.Cookie(stickyCookieName); err == nil {
+				if id, err := strconv.ParseUint(c.Value, 10, 64); err == nil {
+					preferredID = uint(id)
+				}
+			}
+		}
+
+		target := l.pickBackend(clientIP, preferredID)
+		if target == nil {
+			Metrics.RecordRequest(l.Config.ID, 0, true)
+			http.Error(w, "503 Service Unavailable - no healthy backend nodes available", http.StatusServiceUnavailable)
+			return
+		}
+		defer l.releaseBackend(target)
+
+		ctx := context.WithValue(r.Context(), ctxKeyBackend, target)
+		ctx = context.WithValue(ctx, ctxKeyClientAddr, r.RemoteAddr)
+		proxy.ServeHTTP(w, r.WithContext(ctx))
+	})
+
 	var tlsConfig *tls.Config
 	if l.Config.SSLEnabled {
-		if l.Config.ACMEEnabled || l.Config.AutoSSL {
-			certmagic.DefaultACME.Agreed = true
-			certmagic.DefaultACME.Email = l.Config.ACMEEmail
-			if certmagic.DefaultACME.Email == "" {
-				certmagic.DefaultACME.Email = "admin@balancer.local"
-			}
-			
-			// Store certificates in the persistent volume mapped in docker-compose
-			certmagic.Default.Storage = &certmagic.FileStorage{Path: "./certs/certmagic"}
-			
-			cfg := certmagic.NewDefault()
-			if l.Config.ACMEDomains != "" {
-				rawDomains := strings.Split(l.Config.ACMEDomains, ",")
-				var cleanDomains []string
-				for _, d := range rawDomains {
-					d = strings.TrimSpace(d)
-					if d != "" {
-						cleanDomains = append(cleanDomains, d)
-					}
-				}
-				if len(cleanDomains) > 0 {
-					l.acmeStatus.Store("issuing")
-					go func() {
-						err := cfg.ManageSync(context.Background(), cleanDomains)
-						if err != nil {
-							l.acmeStatus.Store("error")
-							l.acmeError.Store(err.Error())
-							Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to manage ACME domains for %s: %v", l.Config.Name, err))
-						} else {
-							l.acmeStatus.Store("ok")
-							l.acmeError.Store("")
-							Logger.Info(fmt.Sprintf("ACME certificate successfully issued for domains: %v", cleanDomains))
-						}
-					}()
-				}
-			}
-			tlsConfig = cfg.TLSConfig()
-		} else if l.Config.CertData != "" && l.Config.KeyData != "" {
-			cert, err := tls.X509KeyPair([]byte(l.Config.CertData), []byte(l.Config.KeyData))
-			if err == nil {
-				tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
-			} else {
-				Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to load TLS cert from data for %s: %v", l.Config.Name, err))
-			}
-		} else if l.Config.CertPath != "" && l.Config.KeyPath != "" {
-			cert, err := tls.LoadX509KeyPair(l.Config.CertPath, l.Config.KeyPath)
-			if err == nil {
-				tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
-			} else {
-				Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to load TLS cert from path for %s: %v", l.Config.Name, err))
-			}
-		} else {
-			// Local dev fallback
-			tlsConfig, _ = generateSelfSignedCert()
+		var err error
+		if tlsConfig, err = l.buildTLSConfig(); err != nil {
+			return err
 		}
 	}
 
-	errChan := make(chan error, 1)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	server := &http.Server{
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       msOr(l.Config.IdleTimeout, defaultHTTPIdle),
+	}
 
-	if l.Config.SSLEnabled && tlsConfig != nil {
-		l.httpsServer = &http.Server{
-			Addr:      addr,
+	errChan := make(chan error, 3)
+
+	var redirectLn net.Listener
+	var redirectServer *http.Server
+	if tlsConfig != nil && l.Config.HTTPRedirect {
+		redirectAddr := backendAddr(l.Config.ListenIP, httpRedirectPort)
+		if redirectLn, err = net.Listen("tcp", redirectAddr); err != nil {
+			ln.Close()
+			return fmt.Errorf("HTTP to HTTPS redirect: %w", err)
+		}
+		redirectServer = &http.Server{Handler: l.redirectHandler(), ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			Logger.InfoLB(l.Config.Name, fmt.Sprintf("Redirecting HTTP on %s to HTTPS", redirectAddr))
+			errChan <- redirectServer.Serve(redirectLn)
+		}()
+	}
+	var udpConn net.PacketConn
+	if tlsConfig != nil && l.Config.HTTP3Enabled {
+		if udpConn, err = net.ListenPacket("udp", addr); err != nil {
+			ln.Close()
+			if redirectLn != nil {
+				redirectLn.Close()
+			}
+			return err
+		}
+		l.http3Server = &http3.Server{
 			Handler:   handler,
 			TLSConfig: tlsConfig,
 		}
-
 		go func() {
-			Logger.InfoLB(l.Config.Name, fmt.Sprintf("HTTPS LoadBalancer %s listening on %s", l.Config.Name, addr))
-			errChan <- l.httpsServer.ListenAndServeTLS("", "")
-		}()
-		
-		if l.Config.HTTP3Enabled {
-			l.http3Server = &http3.Server{
-				Addr:      addr,
-				Handler:   handler,
-				TLSConfig: tlsConfig,
-			}
-			go func() {
-				Logger.InfoLB(l.Config.Name, fmt.Sprintf("HTTP/3 (QUIC) LoadBalancer %s listening on %s", l.Config.Name, addr))
-				errChan <- l.http3Server.ListenAndServe()
-			}()
-		}
-	} else {
-		l.httpServer = &http.Server{
-			Addr:    addr,
-			Handler: handler,
-		}
-		go func() {
-			Logger.InfoLB(l.Config.Name, fmt.Sprintf("HTTP LoadBalancer %s listening on %s", l.Config.Name, addr))
-			errChan <- l.httpServer.ListenAndServe()
+			Logger.InfoLB(l.Config.Name, fmt.Sprintf("HTTP/3 (QUIC) LoadBalancer %s listening on %s", l.Config.Name, addr))
+			errChan <- l.http3Server.Serve(udpConn)
 		}()
 	}
 
 	go func() {
-		<-ctx.Done()
-		if l.httpServer != nil {
-			l.httpServer.Shutdown(context.Background())
-		}
-		if l.httpsServer != nil {
-			l.httpsServer.Shutdown(context.Background())
-		}
-		if l.http3Server != nil {
-			l.http3Server.Close()
+		if tlsConfig != nil {
+			Logger.InfoLB(l.Config.Name, fmt.Sprintf("HTTPS LoadBalancer %s listening on %s", l.Config.Name, addr))
+			errChan <- server.ServeTLS(ln, "", "")
+		} else {
+			Logger.InfoLB(l.Config.Name, fmt.Sprintf("HTTP LoadBalancer %s listening on %s", l.Config.Name, addr))
+			errChan <- server.Serve(ln)
 		}
 	}()
+	l.setState(statusRunning, "")
 
-	return <-errChan
+	var serveErr error
+	select {
+	case <-l.ctx.Done():
+	case serveErr = <-errChan:
+	}
+
+	// Release the ports right away; let in-flight requests drain in the background.
+	ln.Close()
+	if redirectLn != nil {
+		redirectLn.Close()
+		redirectServer.Close()
+	}
+	if l.http3Server != nil {
+		l.http3Server.Close()
+		udpConn.Close()
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		server.Shutdown(ctx)
+		server.Close()
+	}()
+
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
+		return serveErr
+	}
+	return nil
 }
 
-func (l *LoadBalancerInstance) Stop() {
-	if l.cancel != nil {
-		l.cancel()
-	}
-}
-
-func generateSelfSignedCert() (*tls.Config, error) {
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			Organization: []string{"Balancer Local Dev"},
-		},
-		NotBefore: time.Now(),
-		NotAfter:  time.Now().Add(time.Hour * 24 * 365),
-
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-	if err != nil {
-		return nil, err
-	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
-	
-	privBytes, err := x509.MarshalECPrivateKey(priv)
-	if err != nil {
-		return nil, err
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes})
-
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, err
-	}
-
-	return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
-}
-
-type backendTransport struct {
-	lbID     uint
-	strategy Strategy
-
-	proxyProtocolEnabled bool
-	proxyProtocolVersion int
-	http2Enabled         bool
-
-	// Persistent transport — created once, reused for all requests.
-	// This is critical for HTTP/2: Go's h2 layer needs a stable transport
-	// to maintain connection pools and multiplexed streams.
-	inner *http.Transport
-	once  sync.Once
-}
-
-// getTransport returns the cached *http.Transport, creating it on first call.
-func (t *backendTransport) getTransport() *http.Transport {
-	t.once.Do(func() {
-		tr := &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   10,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
+// redirectHandler answers ACME HTTP-01 challenges and sends everything else
+// to the same URL over HTTPS (308 keeps the method and body for non-GET).
+func (l *LoadBalancerInstance) redirectHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if issuer := l.acmeIssuer.Load(); issuer != nil && issuer.HandleHTTPChallenge(w, r) {
+			return
 		}
-
-		tr.TLSClientConfig = &tls.Config{
-			InsecureSkipVerify: true,
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
 		}
-
-		tr.ForceAttemptHTTP2 = false
-
-		baseDial := tr.DialContext
-		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			// Override addr with the actual backend IP, ignoring req.URL.Host (which is used for SNI)
-			target, ok := ctx.Value("selected_backend").(*models.BackendServer)
-			if ok && target != nil {
-				addr = fmt.Sprintf("%s:%d", target.Address, target.Port)
-			}
-			conn, err := baseDial(ctx, network, addr)
-			if err != nil {
-				return nil, err
-			}
-			
-			if t.proxyProtocolEnabled {
-				if err != nil {
-					return nil, err
-				}
-
-				// Extract client info from the request stashed in context
-				remoteAddr, _ := ctx.Value(ctxKeyRemoteAddr).(string)
-				clientIP, clientPortStr, _ := net.SplitHostPort(remoteAddr)
-				destIP, destPortStr, _ := net.SplitHostPort(conn.LocalAddr().String())
-
-				header := &proxyproto.Header{
-					Version:           byte(t.proxyProtocolVersion),
-					Command:           proxyproto.PROXY,
-					TransportProtocol: proxyproto.TCPv4,
-					SourceAddr: &net.TCPAddr{
-						IP:   net.ParseIP(clientIP),
-						Port: parsePort(clientPortStr),
-					},
-					DestinationAddr: &net.TCPAddr{
-						IP:   net.ParseIP(destIP),
-						Port: parsePort(destPortStr),
-					},
-				}
-
-				if header.SourceAddr.(*net.TCPAddr).IP.To4() == nil {
-					header.TransportProtocol = proxyproto.TCPv6
-				}
-
-				_, err = header.WriteTo(conn)
-				if err != nil {
-					conn.Close()
-					return nil, err
-				}
-			}
-
-			return conn, nil
+		if host == "" {
+			http.Error(w, "Missing Host header", http.StatusBadRequest)
+			return
 		}
-
-		tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			baseConn, err := tr.DialContext(ctx, network, addr)
-			if err != nil {
-				return nil, err
-			}
-			
-			sni := ""
-			if reqHost, ok := ctx.Value(ctxKeyRequestHost).(string); ok {
-				sni = reqHost
-			}
-			
-			tlsConfig := tr.TLSClientConfig.Clone()
-			if sni != "" {
-				// Trim port if present for SNI
-				host, _, err := net.SplitHostPort(sni)
-				if err != nil {
-					host = sni
-				}
-				tlsConfig.ServerName = host
-			}
-			
-			tlsConn := tls.Client(baseConn, tlsConfig)
-			err = tlsConn.HandshakeContext(ctx)
-			if err != nil {
-				baseConn.Close()
-				return nil, err
-			}
-			return tlsConn, nil
+		if l.Config.ListenPort != 443 {
+			host = net.JoinHostPort(host, strconv.Itoa(l.Config.ListenPort))
+		} else if strings.Contains(host, ":") {
+			host = "[" + host + "]" // IPv6 literal
 		}
-
-		t.inner = tr
+		code := http.StatusPermanentRedirect
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			code = http.StatusMovedPermanently
+		}
+		http.Redirect(w, r, "https://"+host+r.URL.RequestURI(), code)
 	})
-	return t.inner
-}
-
-// context key type to avoid collisions
-type ctxKey string
-
-const ctxKeyRemoteAddr ctxKey = "remote_addr"
-const ctxKeyRequestHost ctxKey = "request_host"
-
-func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	start := time.Now()
-
-	tr := t.getTransport()
-
-	// Apply SNI override from backend config
-	if target, ok := req.Context().Value("selected_backend").(*models.BackendServer); ok && target.SNI != "" {
-		req.Host = target.SNI
-		// We need per-request SNI. Clone TLSClientConfig only when SNI differs.
-		// For HTTP/2 the ServerName in the persistent config doesn't matter
-		// because Go's http2 transport uses req.Host for the :authority pseudo-header,
-		// and the TLS layer picks up ServerName from the first connection.
-		// But to be safe with varying backends, we override via the request Host.
-	}
-
-	// Stash RemoteAddr in context so the proxy-protocol DialContext can read it
-	if t.proxyProtocolEnabled {
-		ctx := context.WithValue(req.Context(), ctxKeyRemoteAddr, req.RemoteAddr)
-		req = req.WithContext(ctx)
-	}
-
-	resp, err := tr.RoundTrip(req)
-	latency := time.Since(start)
-
-	isError := err != nil || (resp != nil && resp.StatusCode >= 500)
-	Metrics.RecordRequest(t.lbID, latency, isError)
-
-	if target, ok := req.Context().Value("selected_backend").(*models.BackendServer); ok {
-		Metrics.RecordBackendRequest(target.ID, latency, isError)
-		if lc, ok := t.strategy.(*LeastConnections); ok {
-			lc.CompleteConnection(target)
-		}
-	}
-
-	return resp, err
 }
 
 func (l *LoadBalancerInstance) GetACMEStatus() string {

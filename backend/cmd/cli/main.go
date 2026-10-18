@@ -8,6 +8,7 @@ import (
 	"github.com/balancer/backend/internal/db"
 	"github.com/balancer/backend/internal/models"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 func printUsage() {
@@ -16,7 +17,36 @@ func printUsage() {
 	fmt.Println("  users list                               List all users")
 	fmt.Println("  users add <username> <password> [role]   Create a new user (role defaults to Admin)")
 	fmt.Println("  users passwd <username> <new_password>   Change a user's password")
+	fmt.Println("  users role <username> <role>             Change a user's role")
+	fmt.Println("  users delete <username>                  Delete a user")
+	fmt.Println("\nRoles: Admin (everything), Operator (manage load balancers), Viewer (read-only)")
 	os.Exit(1)
+}
+
+func validateRole(role string) {
+	if models.RoleRank(role) == 0 {
+		log.Fatalf("Unknown role %q: expected Admin, Operator or Viewer", role)
+	}
+}
+
+func findUser(database *gorm.DB, username string) models.User {
+	var user models.User
+	if err := database.Where("username = ?", username).Limit(1).Find(&user).Error; err != nil || user.ID == 0 {
+		log.Fatalf("User '%s' not found.", username)
+	}
+	return user
+}
+
+// ensureAnotherAdmin refuses to remove the last Admin.
+func ensureAnotherAdmin(database *gorm.DB, user models.User) {
+	if user.Role != models.RoleAdmin {
+		return
+	}
+	var admins int64
+	database.Model(&models.User{}).Where("role = ? AND id <> ?", models.RoleAdmin, user.ID).Count(&admins)
+	if admins == 0 {
+		log.Fatalf("'%s' is the last Admin; create another Admin first.", user.Username)
+	}
 }
 
 func main() {
@@ -54,10 +84,11 @@ func main() {
 			}
 			username := os.Args[3]
 			password := os.Args[4]
-			role := "Admin"
+			role := models.RoleAdmin
 			if len(os.Args) >= 6 {
 				role = os.Args[5]
 			}
+			validateRole(role)
 
 			hashed, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 			user := models.User{
@@ -75,20 +106,41 @@ func main() {
 				fmt.Println("Error: missing arguments for 'users passwd'")
 				printUsage()
 			}
-			username := os.Args[3]
-			newPassword := os.Args[4]
+			user := findUser(database, os.Args[3])
 
-			var user models.User
-			if err := database.Where("username = ?", username).First(&user).Error; err != nil {
-				log.Fatalf("User '%s' not found.", username)
-			}
-
-			hashed, _ := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
-			user.Password = string(hashed)
-			if err := database.Save(&user).Error; err != nil {
+			hashed, _ := bcrypt.GenerateFromPassword([]byte(os.Args[4]), bcrypt.DefaultCost)
+			if err := database.Model(&user).Update("password", string(hashed)).Error; err != nil {
 				log.Fatalf("Failed to update password: %v", err)
 			}
-			fmt.Printf("Password for '%s' updated successfully.\n", username)
+			fmt.Printf("Password for '%s' updated successfully.\n", user.Username)
+
+		case "role":
+			if len(os.Args) < 5 {
+				fmt.Println("Error: missing arguments for 'users role'")
+				printUsage()
+			}
+			user := findUser(database, os.Args[3])
+			role := os.Args[4]
+			validateRole(role)
+			if role != models.RoleAdmin {
+				ensureAnotherAdmin(database, user)
+			}
+			if err := database.Model(&user).Update("role", role).Error; err != nil {
+				log.Fatalf("Failed to update role: %v", err)
+			}
+			fmt.Printf("Role for '%s' set to %s.\n", user.Username, role)
+
+		case "delete":
+			if len(os.Args) < 4 {
+				fmt.Println("Error: missing arguments for 'users delete'")
+				printUsage()
+			}
+			user := findUser(database, os.Args[3])
+			ensureAnotherAdmin(database, user)
+			if err := database.Delete(&user).Error; err != nil {
+				log.Fatalf("Failed to delete user: %v", err)
+			}
+			fmt.Printf("User '%s' deleted.\n", user.Username)
 
 		default:
 			fmt.Printf("Unknown action for users: %s\n", action)

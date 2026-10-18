@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"log"
 	"sync"
 	"time"
 )
@@ -36,6 +37,13 @@ func NewLogBuffer(capacity int) *LogBuffer {
 }
 
 func (b *LogBuffer) addLog(level LogLevel, message string, lbName string) {
+	// Mirror to stderr so `docker logs` shows it and it survives restarts
+	if lbName != "" {
+		log.Printf("%s [%s] %s", level, lbName, message)
+	} else {
+		log.Printf("%s %s", level, message)
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

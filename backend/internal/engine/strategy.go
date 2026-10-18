@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"hash/fnv"
 	"sync"
 	"sync/atomic"
 
@@ -9,6 +10,39 @@ import (
 
 type Strategy interface {
 	Next(backends []*models.BackendServer, clientIP string) *models.BackendServer
+}
+
+// connCounter tracks active connections per backend ID.
+type connCounter struct {
+	m sync.Map // map[uint]*int64
+}
+
+func (c *connCounter) ptr(id uint) *int64 {
+	val, _ := c.m.LoadOrStore(id, new(int64))
+	return val.(*int64)
+}
+
+// Active returns the number of open connections to a backend.
+func (c *connCounter) Active(id uint) int64 {
+	return atomic.LoadInt64(c.ptr(id))
+}
+
+// tryAcquire reserves a connection slot unless the backend is at max (0 = unlimited).
+func (c *connCounter) tryAcquire(id uint, max int) bool {
+	p := c.ptr(id)
+	for {
+		cur := atomic.LoadInt64(p)
+		if max > 0 && cur >= int64(max) {
+			return false
+		}
+		if atomic.CompareAndSwapInt64(p, cur, cur+1) {
+			return true
+		}
+	}
+}
+
+func (c *connCounter) release(id uint) {
+	atomic.AddInt64(c.ptr(id), -1)
 }
 
 // RoundRobin Strategy
@@ -24,8 +58,11 @@ func (r *RoundRobin) Next(backends []*models.BackendServer, clientIP string) *mo
 	return backends[idx]
 }
 
+// LeastConnections picks the backend with the fewest active connections,
+// rotating the starting point so ties are spread evenly.
 type LeastConnections struct {
-	connections sync.Map // map[uint]*int64  — keyed by backend ID
+	conns   *connCounter
+	counter uint64
 }
 
 func (l *LeastConnections) Next(backends []*models.BackendServer, clientIP string) *models.BackendServer {
@@ -33,35 +70,21 @@ func (l *LeastConnections) Next(backends []*models.BackendServer, clientIP strin
 		return nil
 	}
 
+	start := int(atomic.AddUint64(&l.counter, 1) % uint64(len(backends)))
 	var bestBackend *models.BackendServer
 	var minConns int64 = -1
 
-	for _, b := range backends {
-		val, _ := l.connections.LoadOrStore(b.ID, new(int64))
-		conns := atomic.LoadInt64(val.(*int64))
-
+	for i := range backends {
+		b := backends[(start+i)%len(backends)]
+		conns := l.conns.Active(b.ID)
 		if minConns == -1 || conns < minConns {
 			minConns = conns
 			bestBackend = b
 		}
 	}
 
-	if bestBackend != nil {
-		val, _ := l.connections.Load(bestBackend.ID)
-		atomic.AddInt64(val.(*int64), 1)
-	}
-
 	return bestBackend
 }
-
-// CompleteConnection should be called when a connection to a backend is closed.
-// This is specific to strategies that track connection state.
-func (l *LeastConnections) CompleteConnection(backend *models.BackendServer) {
-	if val, ok := l.connections.Load(backend.ID); ok {
-		atomic.AddInt64(val.(*int64), -1)
-	}
-}
-
 
 // WeightedRoundRobin Strategy
 type WeightedRoundRobin struct {
@@ -72,7 +95,7 @@ func (w *WeightedRoundRobin) Next(backends []*models.BackendServer, clientIP str
 	if len(backends) == 0 {
 		return nil
 	}
-	
+
 	// Calculate total weight
 	var totalWeight int
 	for _, b := range backends {
@@ -84,7 +107,7 @@ func (w *WeightedRoundRobin) Next(backends []*models.BackendServer, clientIP str
 	}
 
 	idx := atomic.AddUint64(&w.current, 1) % uint64(totalWeight)
-	
+
 	var currentWeight uint64
 	for _, b := range backends {
 		weight := b.Weight
@@ -96,7 +119,7 @@ func (w *WeightedRoundRobin) Next(backends []*models.BackendServer, clientIP str
 			return b
 		}
 	}
-	
+
 	return backends[0]
 }
 
@@ -107,14 +130,13 @@ func (h *IPHash) Next(backends []*models.BackendServer, clientIP string) *models
 	if len(backends) == 0 {
 		return nil
 	}
-	
-	var hash uint32 = 0
-	for i := 0; i < len(clientIP); i++ {
-		hash = hash*31 + uint32(clientIP[i])
-	}
-	
-	idx := hash % uint32(len(backends))
-	return backends[idx]
+	return backends[hashIP(clientIP)%uint32(len(backends))]
+}
+
+func hashIP(clientIP string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(clientIP))
+	return h.Sum32()
 }
 
 // Failover Strategy (Active-Passive)
@@ -132,3 +154,17 @@ func (f *Failover) Next(backends []*models.BackendServer, clientIP string) *mode
 	return backends[0]
 }
 
+func newStrategy(algorithm string, conns *connCounter) Strategy {
+	switch algorithm {
+	case "least_conn":
+		return &LeastConnections{conns: conns}
+	case "weighted_round_robin":
+		return &WeightedRoundRobin{}
+	case "ip_hash":
+		return &IPHash{}
+	case "failover":
+		return &Failover{}
+	default:
+		return &RoundRobin{}
+	}
+}

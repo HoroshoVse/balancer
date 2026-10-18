@@ -1,0 +1,290 @@
+package engine
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/balancer/backend/internal/models"
+	"github.com/caddyserver/certmagic"
+)
+
+// buildTLSConfig returns the certificate setup for SSL termination.
+func (l *LoadBalancerInstance) buildTLSConfig() (*tls.Config, error) {
+	switch {
+	case l.Config.UsesACME():
+		return l.acmeTLSConfig(), nil
+	case l.Config.CertData != "" && l.Config.KeyData != "":
+		cert, err := tls.X509KeyPair([]byte(l.Config.CertData), []byte(l.Config.KeyData))
+		if err != nil {
+			return nil, fmt.Errorf("invalid TLS certificate or key: %w", err)
+		}
+		return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
+	case l.Config.CertPath != "" && l.Config.KeyPath != "":
+		cert, err := tls.LoadX509KeyPair(l.Config.CertPath, l.Config.KeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load TLS certificate from path: %w", err)
+		}
+		return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
+	default:
+		Logger.WarnLB(l.Config.Name, fmt.Sprintf("%s: no certificate configured, using a self-signed one", l.Config.Name))
+		return generateSelfSignedCert()
+	}
+}
+
+// acmeTLSConfig manages certificates with a certmagic config owned by this
+// instance, so balancers with different ACME settings don't overwrite each other.
+func (l *LoadBalancerInstance) acmeTLSConfig() *tls.Config {
+	var cfg *certmagic.Config
+	cache := certmagic.NewCache(certmagic.CacheOptions{
+		GetConfigForCert: func(certmagic.Certificate) (*certmagic.Config, error) {
+			return cfg, nil
+		},
+	})
+	// Store certificates in the persistent volume mapped in docker-compose
+	cfg = certmagic.New(cache, certmagic.Config{
+		Storage: &certmagic.FileStorage{Path: "./certs/certmagic"},
+	})
+	issuer := certmagic.NewACMEIssuer(cfg, certmagic.ACMEIssuer{
+		CA:     certmagic.LetsEncryptProductionCA,
+		Email:  l.Config.ACMEEmail, // optional; Let's Encrypt rejects made-up addresses
+		Agreed: true,
+	})
+	cfg.Issuers = []certmagic.Issuer{issuer}
+	l.acmeIssuer.Store(issuer) // lets the HTTP->HTTPS redirect answer HTTP-01 challenges
+
+	go func() {
+		<-l.ctx.Done()
+		cache.Stop()
+	}()
+
+	var domains []string
+	for _, d := range strings.Split(l.Config.ACMEDomains, ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			domains = append(domains, d)
+		}
+	}
+	if len(domains) > 0 {
+		l.acmeStatus.Store("issuing")
+		go func() {
+			err := cfg.ManageSync(l.ctx, domains)
+			if l.ctx.Err() != nil {
+				return
+			}
+			if err != nil {
+				l.acmeStatus.Store("error")
+				l.acmeError.Store(err.Error())
+				Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to manage ACME domains for %s: %v", l.Config.Name, err))
+			} else {
+				l.acmeStatus.Store("ok")
+				l.acmeError.Store("")
+				Logger.InfoLB(l.Config.Name, fmt.Sprintf("ACME certificate successfully issued for domains: %v", domains))
+			}
+		}()
+	}
+	return cfg.TLSConfig()
+}
+
+func generateSelfSignedCert() (*tls.Config, error) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"Balancer Local Dev"},
+		},
+		NotBefore: time.Now(),
+		NotAfter:  time.Now().Add(time.Hour * 24 * 365),
+
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return nil, err
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+
+	privBytes, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return nil, err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes})
+
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, err
+	}
+
+	return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
+}
+
+// newBackendTLSClient wraps a backend connection in TLS. Backend
+// certificates are not verified (backends commonly use self-signed certs).
+func newBackendTLSClient(conn net.Conn, serverName string, http2 bool) *tls.Conn {
+	cfg := &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         serverName,
+	}
+	if http2 {
+		cfg.NextProtos = []string{"h2", "http/1.1"}
+	}
+	return tls.Client(conn, cfg)
+}
+
+// maxServerNameTransports bounds how many distinct TLS server names get
+// their own connection pool (the Host header is client-controlled).
+const maxServerNameTransports = 256
+
+type backendTransport struct {
+	lbID uint
+
+	proxyProtocolEnabled bool
+	proxyProtocolVersion int
+	http2Enabled         bool
+	connectTimeout       time.Duration
+	responseTimeout      time.Duration // 0: wait as long as the client does
+
+	// One persistent *http.Transport per TLS server name: a pooled TLS
+	// connection is bound to the SNI it was opened with, so requests for
+	// different names must not share it. Plain HTTP uses the "" entry.
+	mu         sync.Mutex
+	transports map[string]*http.Transport
+}
+
+func (t *backendTransport) transportFor(serverName string) *http.Transport {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.transports == nil {
+		t.transports = make(map[string]*http.Transport)
+	}
+	if tr, ok := t.transports[serverName]; ok {
+		return tr
+	}
+	if len(t.transports) >= maxServerNameTransports {
+		serverName = ""
+		if tr, ok := t.transports[serverName]; ok {
+			return tr
+		}
+	}
+	tr := t.newTransport(serverName)
+	t.transports[serverName] = tr
+	return tr
+}
+
+func (t *backendTransport) newTransport(serverName string) *http.Transport {
+	dialer := &net.Dialer{
+		Timeout:   t.connectTimeout,
+		KeepAlive: 30 * time.Second,
+	}
+	tr := &http.Transport{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: t.responseTimeout,
+		// HTTP/2 needs TLS here (no h2c); it is negotiated via ALPN in DialTLSContext.
+		ForceAttemptHTTP2: t.http2Enabled,
+		// A PROXY header describes a single client, so such connections can't be reused.
+		DisableKeepAlives: t.proxyProtocolEnabled,
+	}
+
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		if t.proxyProtocolEnabled {
+			clientAddr, _ := ctx.Value(ctxKeyClientAddr).(string)
+			localAddr, _ := ctx.Value(http.LocalAddrContextKey).(net.Addr)
+			header := buildProxyHeader(t.proxyProtocolVersion, tcpAddrFromString(clientAddr), localAddr)
+			if _, err := header.WriteTo(conn); err != nil {
+				conn.Close()
+				return nil, err
+			}
+		}
+		return conn, nil
+	}
+
+	tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		baseConn, err := tr.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		tlsConn := newBackendTLSClient(baseConn, serverName, t.http2Enabled)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			baseConn.Close()
+			return nil, err
+		}
+		return tlsConn, nil
+	}
+	return tr
+}
+
+func tcpAddrFromString(s string) net.Addr {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil
+	}
+	p, _ := net.LookupPort("tcp", port)
+	return &net.TCPAddr{IP: ip, Port: p}
+}
+
+func (t *backendTransport) closeIdleConnections() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, tr := range t.transports {
+		tr.CloseIdleConnections()
+	}
+}
+
+func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	target, _ := req.Context().Value(ctxKeyBackend).(*models.BackendServer)
+
+	// TLS server name: the node's SNI override, otherwise the requested host.
+	serverName := ""
+	if target != nil && target.TLSEnabled {
+		serverName = target.SNI
+		if serverName == "" {
+			serverName = req.Host
+			if host, _, err := net.SplitHostPort(serverName); err == nil {
+				serverName = host
+			}
+		}
+	}
+
+	resp, err := t.transportFor(serverName).RoundTrip(req)
+	latency := time.Since(start)
+
+	isError := err != nil || (resp != nil && resp.StatusCode >= 500)
+	Metrics.RecordRequest(t.lbID, latency, isError)
+	if target != nil {
+		Metrics.RecordBackendRequest(target.ID, latency, isError)
+	}
+
+	return resp, err
+}

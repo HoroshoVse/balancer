@@ -2,10 +2,10 @@ package api
 
 import (
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -28,14 +28,17 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req TestConnectionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Address == "" || req.Port < 1 || req.Port > 65535 {
+		http.Error(w, "address and a port between 1 and 65535 are required", http.StatusBadRequest)
 		return
 	}
 
 	logs := ""
 
-	target := fmt.Sprintf("%s:%d", req.Address, req.Port)
+	target := net.JoinHostPort(req.Address, strconv.Itoa(req.Port))
 	logs += fmt.Sprintf("Testing connection to %s...\n", target)
 
 	// Step 1: TCP Connect
@@ -97,6 +100,5 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) respondJSON(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+	writeJSON(w, http.StatusOK, data)
 }
