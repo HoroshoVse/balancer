@@ -392,3 +392,58 @@ func TestHostMetrics(t *testing.T) {
 		t.Fatalf("viewer: %d %s", rec.Code, rec.Body)
 	}
 }
+
+func TestBackupOrderAndMode(t *testing.T) {
+	env := newTestEnv(t)
+	operator := env.tokens[models.RoleOperator]
+
+	lb := sampleLB(18005)
+	lb.BackupMode = models.BackupOrdered
+	lb.BackendGroup.Backends = append(lb.BackendGroup.Backends, models.BackendServer{Name: "c", Address: "127.0.0.1", Port: 11, Enabled: true, Backup: true})
+	lb.BackendGroup.Backends[1].Backup = true
+	id := env.createLB(lb)
+
+	names := func() string {
+		var lbs []models.LoadBalancer
+		json.Unmarshal(env.do(http.MethodGet, "/api/v1/load-balancers", operator, nil).Body.Bytes(), &lbs)
+		var out []string
+		for _, b := range lbs[0].BackendGroup.Backends {
+			out = append(out, b.Name)
+		}
+		return lbs[0].BackupMode + ":" + strings.Join(out, ",")
+	}
+	if got := names(); got != "ordered:a,b,c" {
+		t.Fatalf("after create: %s", got)
+	}
+
+	// Reordering keeps the nodes (and their IDs) but changes who backs up first
+	var stored models.LoadBalancer
+	env.db.Preload("BackendGroup.Backends", models.OrderedBackends).First(&stored, id)
+	nodes := stored.BackendGroup.Backends
+	stored.BackendGroup.Backends = []models.BackendServer{nodes[2], nodes[1], nodes[0]}
+	if rec := env.do(http.MethodPut, "/api/v1/load-balancers", operator, stored); rec.Code != http.StatusOK {
+		t.Fatalf("reorder: %d %s", rec.Code, rec.Body)
+	}
+	if got := names(); got != "ordered:c,b,a" {
+		t.Fatalf("after reorder: %s", got)
+	}
+
+	stored.BackupMode = "random"
+	if rec := env.do(http.MethodPut, "/api/v1/load-balancers", operator, stored); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "backup mode") {
+		t.Fatalf("invalid backup mode: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestTelegramTestNeedsTokenAndChat(t *testing.T) {
+	env := newTestEnv(t)
+	if rec := env.do(http.MethodPost, "/api/v1/settings/telegram/test", env.tokens[models.RoleOperator], map[string]string{}); rec.Code != http.StatusForbidden {
+		t.Fatalf("operator: %d", rec.Code)
+	}
+	rec := env.do(http.MethodPost, "/api/v1/settings/telegram/test", env.tokens[models.RoleAdmin], map[string]string{"telegram_chat_id": "42"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("no token saved or given: %d %s", rec.Code, rec.Body)
+	}
+	if rec := env.do(http.MethodGet, "/api/v1/settings", env.tokens[models.RoleAdmin], nil); strings.Contains(rec.Body.String(), "telegram_last") {
+		t.Fatalf("no alert was sent yet: %s", rec.Body)
+	}
+}

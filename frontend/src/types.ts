@@ -35,6 +35,7 @@ export interface LoadBalancer {
   listen_ip: string
   listen_port: number
   algorithm: string
+  backup_mode?: string // "all" (default) or "ordered": backups take over one at a time in list order
   ssl_enabled: boolean
   auto_ssl: boolean
   cert_path: string

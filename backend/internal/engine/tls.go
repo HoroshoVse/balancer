@@ -69,11 +69,20 @@ func (l *LoadBalancerInstance) acmeTLSConfig() *tls.Config {
 	cfg = certmagic.New(cache, certmagic.Config{
 		Storage: storage,
 		OnEvent: func(_ context.Context, event string, data map[string]any) error {
-			if event == "cached_managed_cert" {
+			switch event {
+			case "cached_managed_cert":
 				if sans, ok := data["sans"].([]string); ok {
 					for _, name := range sans {
 						cached.Store(strings.ToLower(name), true)
 					}
+				}
+			case "cert_failed", "cert_obtained":
+				// Renewals run in the background long after manageCertificates returned
+				if renewal, _ := data["renewal"].(bool); renewal {
+					domain, _ := data["identifier"].(string)
+					remaining, _ := data["remaining"].(time.Duration)
+					err, _ := data["error"].(error)
+					l.reportRenewal(domain, event == "cert_obtained", remaining, err)
 				}
 			}
 			return nil
@@ -183,6 +192,40 @@ func (l *LoadBalancerInstance) manageCertificates(cfg *certmagic.Config, storage
 		}
 		delay = min(delay*2, acmeRetryMax)
 	}
+}
+
+// reportRenewal alerts on the first failed renewal of a domain and on the
+// renewal that finally succeeds after it.
+func (l *LoadBalancerInstance) reportRenewal(domain string, ok bool, remaining time.Duration, err error) {
+	name := html.EscapeString(l.Config.Name)
+	if ok {
+		if _, alerted := l.renewAlerted.LoadAndDelete(domain); alerted {
+			Logger.InfoLB(l.Config.Name, fmt.Sprintf("Certificate for %s renewed", domain))
+			l.alert(fmt.Sprintf("✅ <b>%s</b>: сертификат для %s продлён.", name, html.EscapeString(domain)))
+		}
+		return
+	}
+	reason := "unknown error"
+	if err != nil {
+		reason = err.Error()
+	}
+	Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to renew the certificate for %s (%s left): %s", domain, remaining.Round(time.Minute), reason))
+	if _, already := l.renewAlerted.LoadOrStore(domain, true); already {
+		return
+	}
+	left := "Сертификат уже истёк — клиенты получают ошибку TLS."
+	if remaining > 0 {
+		left = fmt.Sprintf("Текущий действует ещё %s, повторю позже.", russianRemaining(remaining))
+	}
+	l.alert(fmt.Sprintf("🔒 <b>%s</b>: не удалось продлить сертификат для %s. %s\n<code>%s</code>", name, html.EscapeString(domain), left, html.EscapeString(reason)))
+}
+
+// russianRemaining formats how long a certificate stays valid: "12 дн.", "5 ч".
+func russianRemaining(d time.Duration) string {
+	if d >= 48*time.Hour {
+		return fmt.Sprintf("%d дн.", d/(24*time.Hour))
+	}
+	return fmt.Sprintf("%d ч", max(d/time.Hour, 1))
 }
 
 // russianDelay formats a retry delay for alerts: "2 мин", "1 ч", "30 с".

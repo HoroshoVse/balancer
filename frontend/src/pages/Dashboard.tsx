@@ -5,7 +5,7 @@ import { api, canEdit } from "@/lib/api"
 import { across, branch, down, flowOf, shareWidth, useMeasured, type FlowPath } from "@/lib/flow"
 import { humanize, type EventKind } from "@/lib/humanize"
 import { useLBs } from "@/lib/lbs"
-import { activeNodes, algorithmLabel, formatNumber, kindLabel, kindOf, lbHealth, listenAddr, plural } from "@/lib/lbModel"
+import { activeNodes, algorithmLabel, backupQueue, formatNumber, kindLabel, kindOf, lbHealth, listenAddr, orderedBackups, plural } from "@/lib/lbModel"
 import { recipeList } from "@/lib/recipes"
 import { usePoll } from "@/lib/usePoll"
 import { Bars } from "@/components/Bars"
@@ -27,25 +27,30 @@ function Readout({ label, value, unit, children, last }: { label: string; value:
 
 // --- Flow ---
 
-type NodeView = { node: BackendNode; state: "active" | "standby" | "down" | "off" }
+type NodeView = { node: BackendNode; state: "active" | "standby" | "down" | "off"; rank?: number }
 
 function nodeViews(lb: LoadBalancer): NodeView[] {
   const active = new Set(activeNodes(lb).map((b) => b.id))
   const order = { active: 0, standby: 1, down: 2, off: 3 }
-  return (lb.backend_group?.backends ?? [])
+  const nodes = lb.backend_group?.backends ?? []
+  // Backups taking over one at a time are numbered by their place in the queue
+  const queue = orderedBackups(lb) ? backupQueue(nodes) : new Map<BackendNode, number>()
+  return nodes
     .map((node): NodeView => ({
       node,
       state: !node.enabled ? "off" : node.status === "DOWN" ? "down" : active.has(node.id) ? "active" : "standby",
+      rank: queue.get(node),
     }))
     .sort((a, b) => order[a.state] - order[b.state])
 }
 
 function NodeChip({ view, nodeRef }: { view: NodeView; nodeRef: (el: HTMLDivElement | null) => void }) {
-  const { node, state } = view
+  const { node, state, rank } = view
+  const backup = rank ? `резерв ${rank}` : "резерв"
   const addr = `${node.address}:${node.port}`
   const styles = {
-    active: { box: "border border-line bg-white", dot: "bg-ok", role: node.backup ? "резерв в работе" : "основной", meta: `${addr} · ${formatNumber(node.metrics?.avg_latency_ms ?? 0, 1)} мс` },
-    standby: { box: "border border-dashed border-[#B7C0CC] bg-white", dot: "border-2 border-ok", role: "резерв", meta: `${addr} · ждёт` },
+    active: { box: "border border-line bg-white", dot: "bg-ok", role: node.backup ? `${backup} в работе` : "основной", meta: `${addr} · ${formatNumber(node.metrics?.avg_latency_ms ?? 0, 1)} мс` },
+    standby: { box: "border border-dashed border-[#B7C0CC] bg-white", dot: "border-2 border-ok", role: backup, meta: `${addr} · ждёт` },
     down: { box: "border border-down/40 bg-down-soft", dot: "bg-down", role: "не отвечает", meta: addr },
     off: { box: "border border-dashed border-line-strong bg-accent", dot: "bg-line-strong", role: "выключен", meta: addr },
   }[state]

@@ -72,6 +72,9 @@ func (lb *LoadBalancer) Normalize() {
 	if lb.Algorithm == "" {
 		lb.Algorithm = "round_robin"
 	}
+	if lb.BackupMode == "" {
+		lb.BackupMode = BackupAll
+	}
 	if lb.ProxyProtocolVersion == 0 {
 		lb.ProxyProtocolVersion = 2
 	}
@@ -85,6 +88,7 @@ func (lb *LoadBalancer) Normalize() {
 	}
 	for i := range lb.BackendGroup.Backends {
 		b := &lb.BackendGroup.Backends[i]
+		b.Position = i
 		b.Address = strings.TrimSpace(b.Address)
 		b.Name = strings.TrimSpace(b.Name)
 		if b.Name == "" {
@@ -114,6 +118,9 @@ func (lb *LoadBalancer) Validate() error {
 	}
 	if !validAlgorithms[lb.Algorithm] {
 		return fmt.Errorf("unknown algorithm %q", lb.Algorithm)
+	}
+	if lb.BackupMode != BackupAll && lb.BackupMode != BackupOrdered {
+		return fmt.Errorf("unknown backup mode %q (expected all or ordered)", lb.BackupMode)
 	}
 	if lb.ListenPort < 1 || lb.ListenPort > 65535 {
 		return fmt.Errorf("listen port must be between 1 and 65535")

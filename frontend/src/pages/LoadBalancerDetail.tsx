@@ -4,17 +4,18 @@ import { toast } from "sonner"
 import { Ellipsis, Globe, ShieldCheck } from "lucide-react"
 import { Bars } from "@/components/Bars"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
+import { FlowPaths } from "@/components/Flow"
 import { Switch } from "@/components/Switch"
 import { AdviceCard, StatusPill } from "@/components/LBBits"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { adviceFor } from "@/lib/advice"
 import { api, canEdit, errorMessage } from "@/lib/api"
 import { describe, formatMs, fromLB } from "@/lib/builderModel"
-import { across, branch, down, flowOf, useMeasured, type FlowKind } from "@/lib/flow"
+import { across, branch, down, flowOf, shareWidth, useMeasured, type FlowKind, type FlowPath } from "@/lib/flow"
 import { humanize } from "@/lib/humanize"
 import { deleteLB, mapNodes, testNode, updateLB } from "@/lib/lbActions"
 import { useLBs } from "@/lib/lbs"
-import { activeNodes, algorithmLabel, formatNumber, kindLabel, kindOf, listenAddr } from "@/lib/lbModel"
+import { activeNodes, algorithmLabel, backupQueue, formatNumber, kindLabel, kindOf, listenAddr, orderedBackups } from "@/lib/lbModel"
 import { usePoll } from "@/lib/usePoll"
 import type { BackendNode, LoadBalancer, LogEntry, MetricsSnapshot } from "@/types"
 
@@ -30,15 +31,14 @@ function nodeState(lb: LoadBalancer, b: BackendNode): NodeState {
 
 // --- Topology ---
 
-type Link = { d: string; style: FlowKind }
-type Geometry = { wide: boolean; links: Link[]; label?: { x: number; y: number; anchor: "middle" | "start" } }
+type Geometry = { wide: boolean; paths: FlowPath[]; label?: { x: number; y: number; wide: boolean } }
 
 // Left to right when everything fits: clients 64 + listen 180 + rule 180 + nodes 240,
 // gaps of at least 64 + 36 + 56 for the links, 64 of padding. Narrower diagrams stack.
 const WIDE_MIN = 884
 const TRUNK = 32 // stacked layout: x of the vertical line, the centre of the clients circle
 
-const linkStroke: Record<FlowKind, string> = { live: "#2E4BFF", idle: "#4A5566", down: "#7A2E12", off: "#2A3340" }
+const PIPE = 10 // px, the width of a link carrying all the traffic
 
 function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
   const kind = kindOf(lb)
@@ -54,6 +54,16 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
   }
   const states = nodes.map((b) => nodeState(lb, b))
   const flow = flowOf(lb, live)
+  const ordered = orderedBackups(lb)
+  const queue = backupQueue(nodes)
+  const queueNodes = [...queue.keys()]
+  const roleOf = (b: BackendNode) => (!b.backup ? "основной" : ordered && queue.has(b) ? `резерв ${queue.get(b)}` : "резерв")
+  // In ordered mode a waiting backup says where it stands in the queue
+  const waitingText = (b: BackendNode) => {
+    if (!ordered || !queue.has(b)) return ring.standby.text
+    const before = queueNodes[(queue.get(b) ?? 1) - 2]
+    return before ? `следующий после ${before.name || before.address}` : "первый на замену"
+  }
 
   const sectionRef = useRef<HTMLElement>(null)
   const clientsRef = useRef<HTMLSpanElement>(null)
@@ -67,43 +77,36 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
       const clients = box(clientsRef.current)
       const listen = box(listenRef.current)
       const rule = box(ruleRef.current)
-      if (!clients || !listen || !rule) return { wide, links: [] }
-      const edge: FlowKind = live > 0 ? "live" : "idle"
+      if (!clients || !listen || !rule) return { wide, paths: [] }
+      const edge = { kind: (live > 0 ? "live" : "idle") as FlowKind, width: PIPE, share: 1 }
       const x = clients.l + TRUNK
-      const links: Link[] = wide
-        ? [{ d: across(clients, listen), style: edge }, { d: across(listen, rule), style: edge }]
-        : [{ d: down(clients, x, listen), style: edge }, { d: down(listen, x, rule), style: edge }]
+      const paths: FlowPath[] = wide
+        ? [{ d: across(clients, listen), ...edge }, { d: across(listen, rule), ...edge }]
+        : [{ d: down(clients, x, listen), ...edge }, { d: down(listen, x, rule), ...edge }]
       nodes.forEach((b, i) => {
         const node = box(nodeRefs.current[i])
-        if (node) links.push({ d: wide ? across(rule, node) : branch(rule, rule.l + TRUNK, node), style: flow(b).kind })
+        const f = flow(b)
+        if (node) paths.push({ d: wide ? across(rule, node) : branch(rule, rule.l + TRUNK, node), kind: f.kind, width: shareWidth(PIPE, f.share), share: f.share })
       })
-      const label = wide ? { x: (clients.r + listen.l) / 2, y: clients.cy - 14, anchor: "middle" as const } : { x: x + 14, y: (clients.b + listen.t) / 2 + 4, anchor: "start" as const }
-      return { wide, links, label }
+      const label = wide ? { x: (clients.r + listen.l) / 2, y: clients.cy - 10, wide } : { x: x + 14, y: (clients.b + listen.t) / 2, wide }
+      return { wide, paths, label }
     },
-    { wide: true, links: [] },
+    { wide: true, paths: [] },
   )
 
   const { wide } = geo
   return (
     <section ref={sectionRef} aria-label="Схема балансировщика" className="relative rounded-[22px] bg-rail px-6 py-8 text-rail-text sm:px-8">
-      <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible" fill="none">
-        {/* Traffic last, so idle links that share its start don't cross over it */}
-        {[...geo.links].sort((a, b) => Number(a.style === "live") - Number(b.style === "live")).map((link, i) =>
-          link.style === "live" ? (
-            <g key={i}>
-              <path d={link.d} stroke={linkStroke.live} strokeWidth={8} strokeLinecap="round" />
-              <path d={link.d} stroke="rgba(255,255,255,0.75)" strokeWidth={8} className="stream-dashes" />
-            </g>
-          ) : (
-            <path key={i} d={link.d} stroke={linkStroke[link.style]} strokeWidth={2} strokeDasharray="5 6" />
-          ),
-        )}
-        {geo.label && (
-          <text x={geo.label.x} y={geo.label.y} textAnchor={geo.label.anchor} className="fill-cobalt-light font-mono text-[11px]">
-            {live > 0 ? `${formatNumber(live, live < 10 ? 1 : 0)} запр/с` : "тихо"}
-          </text>
-        )}
-      </svg>
+      <FlowPaths paths={geo.paths} tone="dark" />
+      {geo.label && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute whitespace-nowrap font-mono text-[11px] text-cobalt-light"
+          style={{ left: geo.label.x, top: geo.label.y, transform: geo.label.wide ? "translate(-50%, -100%)" : "translateY(-50%)" }}
+        >
+          {live > 0 ? `${formatNumber(live, live < 10 ? 1 : 0)} запр/с` : "тихо"}
+        </span>
+      )}
 
       <div className={`relative flex ${wide ? "items-center gap-0" : "flex-col items-stretch gap-12"}`}>
         <div className={`flex flex-none items-center ${wide ? "relative w-16 justify-center" : "gap-3"}`}>
@@ -129,7 +132,11 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
         <div ref={ruleRef} data-flow className={`flex flex-none flex-col gap-2 rounded-2xl border border-[#3A4DB8] bg-cobalt-deep p-4 ${wide ? "w-[180px]" : ""}`}>
           <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#A8B6FF]">Правило</span>
           <span className="text-base font-semibold text-white">{algorithmLabel[lb.algorithm] ?? lb.algorithm}</span>
-          {nodes.some((b) => b.backup) && <span className="text-[13px] leading-snug text-[#C9D2FF]">резерв ждёт отказа основных</span>}
+          {ordered && queueNodes.length > 1 ? (
+            <span className="text-[13px] leading-snug text-[#C9D2FF]">резерв по порядку: {queueNodes.map((b) => b.name || b.address).join(" → ")}</span>
+          ) : (
+            nodes.some((b) => b.backup) && <span className="text-[13px] leading-snug text-[#C9D2FF]">резерв ждёт отказа основных</span>
+          )}
           {lb.sticky_sessions_enabled && <span className="text-[13px] text-[#C9D2FF]">закрепление по {lb.sticky_session_type === "cookie" ? "cookie" : "IP"}</span>}
         </div>
         {wide && <div aria-hidden="true" className="min-w-[56px] flex-1" />}
@@ -150,11 +157,11 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
                 <span className={`grid h-11 w-11 flex-none place-items-center rounded-full font-mono text-[10px] ${r.ring}`}>{r.label}</span>
                 <span className="flex min-w-0 flex-col gap-0.5">
                   <span className="truncate text-[15px] font-semibold text-white">
-                    {b.name || b.address} <span className="text-[13px] font-normal text-[#A9B3C1]">· {b.backup ? "резерв" : "основной"}</span>
+                    {b.name || b.address} <span className="text-[13px] font-normal text-[#A9B3C1]">· {roleOf(b)}</span>
                   </span>
                   <span className="truncate font-mono text-xs text-[#A9B3C1]">{b.address}:{b.port}{b.tls_enabled ? " · TLS" : ""}</span>
                   <span className="truncate text-xs text-[#C6CEDA]">
-                    {st === "active" ? `${formatNumber(b.metrics?.avg_latency_ms ?? 0, 1)} мс · ${formatNumber(b.metrics?.rps ?? 0, (b.metrics?.rps ?? 0) < 10 ? 1 : 0)} запр/с` : r.text}
+                    {st === "active" ? `${formatNumber(b.metrics?.avg_latency_ms ?? 0, 1)} мс · ${formatNumber(b.metrics?.rps ?? 0, (b.metrics?.rps ?? 0) < 10 ? 1 : 0)} запр/с` : st === "standby" ? waitingText(b) : r.text}
                   </span>
                 </span>
               </div>
@@ -183,6 +190,7 @@ function Chart({ label, value, values, color, colorOf }: { label: string; value:
 function NodesTable({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void }) {
   const editable = canEdit()
   const nodes = lb.backend_group?.backends ?? []
+  const queue = backupQueue(nodes)
   const [busy, setBusy] = useState<number | null>(null)
   const [confirmOff, setConfirmOff] = useState<BackendNode | null>(null)
   const [tests, setTests] = useState<Record<string, string>>({})
@@ -252,7 +260,7 @@ function NodesTable({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void
                       </span>
                     </span>
                   </td>
-                  <td className="border-t border-ground px-3 py-3.5">{b.backup ? "резерв" : "основной"}</td>
+                  <td className="border-t border-ground px-3 py-3.5">{b.backup && orderedBackups(lb) && queue.has(b) ? `резерв ${queue.get(b)}` : b.backup ? "резерв" : "основной"}</td>
                   <td className={`border-t border-ground px-3 py-3.5 ${stateText[st].cls}`}>{stateText[st].text}</td>
                   <td className="border-t border-ground px-3 py-3.5 font-mono">{formatNumber(b.metrics?.rps ?? 0, (b.metrics?.rps ?? 0) < 10 ? 1 : 0)}/с</td>
                   <td className="border-t border-ground px-3 py-3.5 font-mono">{st === "active" ? `${formatNumber(b.metrics?.avg_latency_ms ?? 0, 1)} мс` : "—"}</td>

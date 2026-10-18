@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/balancer/backend/internal/db"
@@ -67,6 +68,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/metrics/overview", s.authed(models.RoleViewer, s.getMetricsOverview))
 	mux.HandleFunc("/api/v1/settings", s.authed(models.RoleAdmin, s.getSettings))
 	mux.HandleFunc("/api/v1/settings/update", s.authed(models.RoleAdmin, s.updateSettings))
+	mux.HandleFunc("/api/v1/settings/telegram/test", s.authed(models.RoleAdmin, s.testTelegram))
 	mux.HandleFunc("/api/v1/system", s.authed(models.RoleAdmin, s.getSystem))
 	mux.HandleFunc("/api/v1/load-balancers/history", s.authed(models.RoleViewer, s.getLBMetricsHistory)) // Expected query param ?id=X
 	mux.HandleFunc("/api/v1/metrics/history", s.authed(models.RoleViewer, s.getGlobalMetricsHistory))
@@ -187,7 +189,42 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	settings.TelegramBotTokenSet = settings.TelegramBotToken != ""
 	settings.TelegramBotToken = ""
-	writeJSON(w, http.StatusOK, settings)
+	writeJSON(w, http.StatusOK, struct {
+		*models.Settings
+		TelegramLast *engine.TelegramDelivery `json:"telegram_last,omitempty"` // latest alert since the server started
+	}{settings, s.engine.LastTelegram()})
+}
+
+// testTelegram sends a test message with the token and chat from the form,
+// falling back to the saved ones, and returns Telegram's answer.
+func (s *Server) testTelegram(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodPost) {
+		return
+	}
+	var input struct {
+		Token  string `json:"telegram_bot_token"`
+		ChatID string `json:"telegram_chat_id"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	settings, err := db.LoadSettings(s.db)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	token, chatID := strings.TrimSpace(input.Token), strings.TrimSpace(input.ChatID)
+	if token == "" {
+		token = settings.TelegramBotToken
+	}
+	if chatID == "" {
+		chatID = settings.TelegramChatID
+	}
+	if token == "" || chatID == "" {
+		http.Error(w, "Bot token and chat ID are required", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, engine.SendTelegram(token, chatID, "✅ Тестовое сообщение от Balancer. Уведомления работают — сюда придут сообщения о сбоях узлов."))
 }
 
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
@@ -237,7 +274,7 @@ func (s *Server) getSystem(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getMetricsOverview(w http.ResponseWriter, r *http.Request) {
 	var lbs []models.LoadBalancer
-	if err := s.db.Preload("BackendGroup.Backends").Find(&lbs).Error; err != nil {
+	if err := s.db.Preload("BackendGroup.Backends", models.OrderedBackends).Find(&lbs).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -278,7 +315,7 @@ func (s *Server) handleLoadBalancers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getLoadBalancers(w http.ResponseWriter, r *http.Request) {
 	var lbs []models.LoadBalancer
-	if err := s.db.Preload("BackendGroup.Backends").Order("id").Find(&lbs).Error; err != nil {
+	if err := s.db.Preload("BackendGroup.Backends", models.OrderedBackends).Order("id").Find(&lbs).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -399,7 +436,7 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var existing models.LoadBalancer
-		if err := tx.Preload("BackendGroup.Backends").Limit(1).Find(&existing, input.ID).Error; err != nil {
+		if err := tx.Preload("BackendGroup.Backends", models.OrderedBackends).Limit(1).Find(&existing, input.ID).Error; err != nil {
 			return err
 		}
 		if existing.ID == 0 {
@@ -415,6 +452,7 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 		existing.ListenPort = input.ListenPort
 		existing.Protocol = input.Protocol
 		existing.Algorithm = input.Algorithm
+		existing.BackupMode = input.BackupMode
 		existing.SSLEnabled = input.SSLEnabled
 		existing.AutoSSL = input.AutoSSL
 		existing.CertPath = input.CertPath

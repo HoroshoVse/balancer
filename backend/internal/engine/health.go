@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/balancer/backend/internal/models"
@@ -53,6 +54,8 @@ type HealthChecker struct {
 	mu      sync.Mutex
 	targets map[uint]HealthTarget
 	states  map[uint]*backendHealth
+
+	lastTelegram atomic.Pointer[TelegramDelivery]
 }
 
 func NewHealthChecker(db *gorm.DB) *HealthChecker {
@@ -345,6 +348,56 @@ func buildDNSQuery(id uint16, name string) []byte {
 	return binary.BigEndian.AppendUint16(binary.BigEndian.AppendUint16(msg, qtype), 1)
 }
 
+// telegramAPI is the Bot API base URL; tests point it at a local server.
+var telegramAPI = "https://api.telegram.org"
+
+// TelegramDelivery is the outcome of sending one message to Telegram.
+type TelegramDelivery struct {
+	At          time.Time `json:"at"`
+	OK          bool      `json:"ok"`
+	Status      int       `json:"status,omitempty"`      // HTTP status of Telegram's answer
+	Description string    `json:"description,omitempty"` // Telegram's explanation, or the network error
+	Network     bool      `json:"network,omitempty"`     // Telegram could not be reached at all
+}
+
+// SendTelegram delivers an HTML-formatted message and reports how it went.
+func SendTelegram(token, chatID, message string) TelegramDelivery {
+	result := TelegramDelivery{At: time.Now()}
+	data, _ := json.Marshal(map[string]interface{}{"chat_id": chatID, "text": message, "parse_mode": "HTML"})
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(telegramAPI+"/bot"+token+"/sendMessage", "application/json", bytes.NewReader(data))
+	if err != nil {
+		// url.Error contains the URL, which includes the bot token
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		result.Network, result.Description = true, err.Error()
+		return result
+	}
+	defer resp.Body.Close()
+	result.Status = resp.StatusCode
+	result.OK = resp.StatusCode == http.StatusOK
+	if !result.OK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		var answer struct {
+			Description string `json:"description"`
+		}
+		if json.Unmarshal(body, &answer) == nil && answer.Description != "" {
+			result.Description = answer.Description
+		} else {
+			result.Description = strings.TrimSpace(resp.Status + " " + string(body))
+		}
+	}
+	return result
+}
+
+// LastTelegram returns the outcome of the latest alert, or nil if none was sent
+// since the server started.
+func (hc *HealthChecker) LastTelegram() *TelegramDelivery {
+	return hc.lastTelegram.Load()
+}
+
 // SendTelegramAlert sends an HTML-formatted message if notifications are on.
 // Callers must escape any user-provided text with html.EscapeString.
 func (hc *HealthChecker) SendTelegramAlert(message string) {
@@ -360,30 +413,14 @@ func (hc *HealthChecker) SendTelegramAlert(message string) {
 		return
 	}
 
-	endpoint := "https://api.telegram.org/bot" + settings.TelegramBotToken + "/sendMessage"
-	payload := map[string]interface{}{
-		"chat_id":    settings.TelegramChatID,
-		"text":       message,
-		"parse_mode": "HTML",
-	}
-
-	data, _ := json.Marshal(payload)
 	go func() {
-		client := http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Post(endpoint, "application/json", bytes.NewBuffer(data))
-		if err != nil {
-			// url.Error contains the URL, which includes the bot token
-			var urlErr *url.Error
-			if errors.As(err, &urlErr) {
-				err = urlErr.Err
-			}
-			Logger.Warn("Telegram alert failed: " + err.Error())
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			Logger.Warn("Telegram alert rejected: " + resp.Status + " " + strconv.Quote(string(body)))
+		result := SendTelegram(settings.TelegramBotToken, settings.TelegramChatID, message)
+		hc.lastTelegram.Store(&result)
+		switch {
+		case result.Network:
+			Logger.Warn("Telegram alert failed: " + result.Description)
+		case !result.OK:
+			Logger.Warn(fmt.Sprintf("Telegram alert rejected: %d %s", result.Status, strconv.Quote(result.Description)))
 		}
 	}()
 }

@@ -45,7 +45,7 @@ func (e *Engine) ReloadConfig() error {
 	defer e.mu.Unlock()
 
 	var lbs []models.LoadBalancer
-	if err := e.db.Preload("BackendGroup.Backends").Find(&lbs).Error; err != nil {
+	if err := e.db.Preload("BackendGroup.Backends", models.OrderedBackends).Find(&lbs).Error; err != nil {
 		return err
 	}
 
@@ -104,6 +104,11 @@ func (e *Engine) Stop() {
 	for _, inst := range e.activeBalancers {
 		inst.Stop()
 	}
+}
+
+// LastTelegram returns the outcome of the latest Telegram alert, if any.
+func (e *Engine) LastTelegram() *TelegramDelivery {
+	return e.healthChecker.LastTelegram()
 }
 
 func (e *Engine) GetHealthState(backendID uint) bool {

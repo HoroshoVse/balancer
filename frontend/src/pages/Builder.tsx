@@ -1,7 +1,7 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
-import { Check as CheckIcon, ChevronDown, Plus, TriangleAlert, X } from "lucide-react"
+import { Check as CheckIcon, ChevronDown, ChevronUp, Plus, TriangleAlert, X } from "lucide-react"
 import { api, canEdit, errorMessage } from "@/lib/api"
 import {
   applyCheck,
@@ -20,10 +20,13 @@ import {
   type NodeForm,
   type Preflight,
 } from "@/lib/builderModel"
-import { kindLabel, type Kind } from "@/lib/lbModel"
+import { backupQueue, kindLabel, type Kind } from "@/lib/lbModel"
 import { useLBs } from "@/lib/lbs"
 import { blankNode, recipeList, type Check } from "@/lib/recipes"
 import { cn } from "@/lib/utils"
+import { across, shareWidth, useMeasured, type FlowPath } from "@/lib/flow"
+import { FlowPaths } from "@/components/Flow"
+import type { BackendNode } from "@/types"
 
 const pill =
   "rounded-t-[10px] border-0 border-b-2 border-dashed border-cobalt bg-cobalt-soft px-2.5 py-0.5 font-medium text-ink outline-none focus:border-solid focus:bg-[#DCE2FF]"
@@ -97,11 +100,69 @@ function Toggle({ label, checked, onChange, hint }: { label: string; checked: bo
   )
 }
 
+// The editor's live preview: who will get the traffic once this is saved
+function PreviewFlow({ form, queue }: { form: BuilderForm; queue: Map<BackendNode, number> }) {
+  const shown = form.nodes.slice(0, 6)
+  const primaries = shown.filter((n) => n.enabled && !n.backup)
+  const backups = shown.filter((n) => n.enabled && n.backup)
+  const takers: BackendNode[] = primaries.length ? primaries : form.backup_mode === "ordered" ? backups.slice(0, 1) : backups
+  const share = 1 / Math.max(takers.length, 1)
+
+  const boxRef = useRef<HTMLDivElement>(null)
+  const listenRef = useRef<HTMLSpanElement>(null)
+  const nodeRefs = useRef<(HTMLSpanElement | null)[]>([])
+  const { paths } = useMeasured(
+    boxRef,
+    (box) => {
+      const listen = box(listenRef.current)
+      const paths: FlowPath[] = []
+      shown.forEach((n, i) => {
+        const node = box(nodeRefs.current[i])
+        if (listen && node) {
+          const live = takers.includes(n)
+          paths.push({ d: across(listen, node), kind: !n.enabled ? "off" : live ? "live" : "idle", width: shareWidth(8, share), share })
+        }
+      })
+      return { paths }
+    },
+    { paths: [] as FlowPath[] },
+  )
+
+  return (
+    <div ref={boxRef} className="relative flex items-center">
+      <FlowPaths paths={paths} tone="dark" />
+      <span ref={listenRef} data-flow className="relative flex flex-none flex-col gap-0.5 rounded-xl border border-[#222B36] bg-rail-2 px-3 py-2.5">
+        <span className="font-mono text-sm text-white">{form.listen_ip || "0.0.0.0"}:{form.listen_port || "—"}</span>
+        <span className="text-xs text-[#A9B3C1]">{kindLabel[form.kind]}</span>
+      </span>
+      <span aria-hidden="true" className="min-w-10 flex-1" />
+      <span className="relative flex flex-none flex-col gap-1.5">
+        {form.nodes.length === 0 && <span className="text-sm text-[#A9B3C1]">узлов нет</span>}
+        {shown.map((n, i) => (
+          <span
+            key={n.key}
+            ref={(el) => {
+              nodeRefs.current[i] = el
+            }}
+            data-flow
+            className={`inline-flex items-center gap-2 rounded-[10px] bg-rail-2 px-2.5 py-1.5 text-[13px] ${n.backup ? "border border-dashed border-[#3A4555]" : "border border-[#1F6B52]"}`}
+          >
+            <span className={`box-border h-2 w-2 rounded-full border-2 border-ok-bright ${n.backup ? "" : "bg-ok-bright"}`} />
+            <span className="max-w-[120px] truncate text-white">{n.name || n.address || "узел"}</span>
+            <span className="font-mono text-rail-muted">{n.backup ? (form.backup_mode === "ordered" && queue.has(n) ? `резерв ${queue.get(n)}` : "резерв") : "основной"}</span>
+          </span>
+        ))}
+        {form.nodes.length > 6 && <span className="text-xs text-rail-muted">и ещё {form.nodes.length - 6}</span>}
+      </span>
+    </div>
+  )
+}
+
 function NodeRow({
-  node, index, kind, check, open, onToggle, onChange, onRemove,
+  node, index, count, backupLabel, kind, check, open, onToggle, onChange, onMove, onRemove,
 }: {
-  node: NodeForm; index: number; kind: Kind; check: Check; open: boolean
-  onToggle: () => void; onChange: (patch: Partial<NodeForm>) => void; onRemove: () => void
+  node: NodeForm; index: number; count: number; backupLabel: string; kind: Kind; check: Check; open: boolean
+  onToggle: () => void; onChange: (patch: Partial<NodeForm>) => void; onMove: (by: -1 | 1) => void; onRemove: () => void
 }) {
   const [test, setTest] = useState("")
   const runTest = async () => {
@@ -121,7 +182,19 @@ function NodeRow({
   return (
     <div className="rounded-[14px] bg-accent p-3">
       <div className="flex flex-wrap items-end gap-3">
-        <span className="grid h-8 w-8 flex-none place-items-center self-center rounded-lg bg-ink font-mono text-[13px] text-white">{index + 1}</span>
+        <span className="flex flex-none items-center gap-1 self-center">
+          <span className="grid h-8 w-8 place-items-center rounded-lg bg-ink font-mono text-[13px] text-white">{index + 1}</span>
+          {count > 1 && (
+            <span className="flex flex-col gap-0.5">
+              <button type="button" disabled={index === 0} onClick={() => onMove(-1)} aria-label={`Узел ${index + 1} выше`} className="grid h-[15px] w-6 place-items-center rounded bg-white text-ink-2 hover:text-ink disabled:opacity-30">
+                <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+              <button type="button" disabled={index === count - 1} onClick={() => onMove(1)} aria-label={`Узел ${index + 1} ниже`} className="grid h-[15px] w-6 place-items-center rounded bg-white text-ink-2 hover:text-ink disabled:opacity-30">
+                <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </span>
+          )}
+        </span>
         <label className="flex min-w-[96px] flex-[1_1_110px] flex-col gap-1 text-xs text-ink-3">
           Имя
           <input value={node.name} onChange={(e) => onChange({ name: e.target.value })} className={smallField} />
@@ -143,7 +216,7 @@ function NodeRow({
         <div className="flex items-end gap-1.5">
         <div role="group" aria-label={`Роль узла ${index + 1}`} className="inline-flex gap-0.5 rounded-[10px] border border-line bg-white p-[3px]">
           <button type="button" aria-pressed={!node.backup} onClick={() => onChange({ backup: false })} className={roleBtn(!node.backup)}>основной</button>
-          <button type="button" aria-pressed={node.backup} onClick={() => onChange({ backup: true })} className={roleBtn(node.backup)}>резерв</button>
+          <button type="button" aria-pressed={node.backup} onClick={() => onChange({ backup: true })} className={roleBtn(node.backup)}>{backupLabel}</button>
         </div>
         <button type="button" aria-expanded={open} onClick={onToggle} className="inline-flex h-10 items-center gap-1 rounded-lg px-2.5 text-[13px] font-medium text-ink-2 hover:bg-white">
           Ещё <ChevronDown className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
@@ -266,6 +339,13 @@ export default function Builder() {
   const set = <K extends keyof BuilderForm>(key: K, value: BuilderForm[K]) => setForm((f) => (f ? { ...f, [key]: value } : f))
   const update = (fn: (f: BuilderForm) => BuilderForm) => setForm((f) => (f ? fn(f) : f))
   const setNode = (key: string, patch: Partial<NodeForm>) => update((f) => ({ ...f, nodes: f.nodes.map((n) => (n.key === key ? { ...n, ...patch } : n)) }))
+  // The list order is the takeover order of backups and the "first live node" order
+  const moveNode = (index: number, by: -1 | 1) =>
+    update((f) => {
+      const nodes = [...f.nodes]
+      ;[nodes[index], nodes[index + by]] = [nodes[index + by], nodes[index]]
+      return { ...f, nodes }
+    })
   const setCheck = (check: Check) => update((f) => ({ ...f, check, nodes: applyCheck(f.nodes, check, f.interval) }))
   const setInterval_ = (interval: string) => update((f) => ({ ...f, interval, nodes: applyCheck(f.nodes, f.check, interval) }))
   const addNode = () =>
@@ -281,6 +361,7 @@ export default function Builder() {
   const toggleSection = (sid: string) => setOpenSection((cur) => (cur === sid ? null : sid))
 
   const checks = preflight(form, lbs, editingId)
+  const queue = backupQueue(form.nodes)
   const errors = checks.filter((c) => c.level === "error").length
   const tls = hasTLS(form.kind)
 
@@ -442,15 +523,41 @@ export default function Builder() {
                 key={n.key}
                 node={n}
                 index={i}
+                count={form.nodes.length}
+                backupLabel={form.backup_mode === "ordered" && queue.has(n) ? `резерв ${queue.get(n)}` : "резерв"}
                 kind={form.kind}
                 check={form.check}
                 open={openNode === n.key}
                 onToggle={() => setOpenNode((cur) => (cur === n.key ? null : n.key))}
                 onChange={(patch) => setNode(n.key, patch)}
+                onMove={(by) => moveNode(i, by)}
                 onRemove={() => update((f) => ({ ...f, nodes: f.nodes.filter((x) => x.key !== n.key) }))}
               />
             ))}
             {form.nodes.length === 0 && <p className="text-sm text-ink-3">Узлов пока нет.</p>}
+            {queue.size > 1 && (
+              <div className="flex flex-col gap-2.5 rounded-[14px] border border-line p-4">
+                <span className="text-[15px] font-semibold">Резерв включается</span>
+                <div role="group" aria-label="Как включается резерв" className="inline-flex gap-0.5 self-start rounded-[10px] border border-line bg-white p-[3px]">
+                  {([["all", "все сразу"], ["ordered", "по одному, по порядку"]] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      aria-pressed={form.backup_mode === mode}
+                      onClick={() => set("backup_mode", mode)}
+                      className={`h-9 rounded-[7px] px-3.5 text-sm font-medium ${form.backup_mode === mode ? "bg-ink text-white" : "text-ink-2 hover:text-ink"}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[13px] leading-snug text-ink-3">
+                  {form.backup_mode === "ordered"
+                    ? "Работает один резервный — первый живой по списку. Следующий подключится, только если упадёт и он. Порядок меняется стрелками у номера узла."
+                    : "Когда основные не отвечают, трафик делится между всеми живыми резервными по выбранному правилу."}
+                </p>
+              </div>
+            )}
           </section>
 
           <section aria-labelledby="step-tuning" className="flex flex-col gap-2.5">
@@ -568,24 +675,7 @@ export default function Builder() {
         <aside aria-label="Что получится" className="flex min-w-0 flex-[2_1_380px] flex-col gap-5 lg:sticky lg:top-6">
           <section className="flex flex-col gap-4 rounded-[22px] bg-rail p-6 text-rail-text">
             <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-rail-muted">Что получится</span>
-            <div className="flex items-center">
-              <span className="flex flex-none flex-col gap-0.5 rounded-xl border border-[#222B36] bg-rail-2 px-3 py-2.5">
-                <span className="font-mono text-sm text-white">{form.listen_ip || "0.0.0.0"}:{form.listen_port || "—"}</span>
-                <span className="text-xs text-[#A9B3C1]">{kindLabel[form.kind]}</span>
-              </span>
-              <span aria-hidden="true" className="h-1 min-w-6 flex-1 bg-cobalt" />
-              <span className="flex flex-none flex-col gap-1.5">
-                {form.nodes.length === 0 && <span className="text-sm text-[#A9B3C1]">узлов нет</span>}
-                {form.nodes.slice(0, 6).map((n) => (
-                  <span key={n.key} className={`inline-flex items-center gap-2 rounded-[10px] bg-rail-2 px-2.5 py-1.5 text-[13px] ${n.backup ? "border border-dashed border-[#3A4555]" : "border border-[#1F6B52]"}`}>
-                    <span className={`box-border h-2 w-2 rounded-full border-2 border-ok-bright ${n.backup ? "" : "bg-ok-bright"}`} />
-                    <span className="max-w-[120px] truncate text-white">{n.name || n.address || "узел"}</span>
-                    <span className="font-mono text-rail-muted">{n.backup ? "резерв" : "основной"}</span>
-                  </span>
-                ))}
-                {form.nodes.length > 6 && <span className="text-xs text-rail-muted">и ещё {form.nodes.length - 6}</span>}
-              </span>
-            </div>
+            <PreviewFlow form={form} queue={queue} />
             <p className="text-base leading-relaxed">{describe(form)}</p>
           </section>
 

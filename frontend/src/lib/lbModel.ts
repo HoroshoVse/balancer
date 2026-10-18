@@ -12,11 +12,26 @@ export interface HealthSummary {
 
 const isUp = (b: BackendNode) => b.enabled && b.status === "UP"
 
-/** Nodes that receive traffic: healthy primaries, or healthy backups when no primary is left (mirrors the engine). */
+/** Backups take over one at a time in list order instead of all together. */
+export const orderedBackups = (lb: { backup_mode?: string }) => lb.backup_mode === "ordered"
+
+/**
+ * Nodes that receive traffic: healthy primaries, or healthy backups when no
+ * primary is left — only the first of them in ordered mode (mirrors the engine).
+ */
 export function activeNodes(lb: LoadBalancer): BackendNode[] {
   const nodes = lb.backend_group?.backends ?? []
   const primaries = nodes.filter((b) => isUp(b) && !b.backup)
-  return primaries.length > 0 ? primaries : nodes.filter((b) => isUp(b) && b.backup)
+  if (primaries.length > 0) return primaries
+  const backups = nodes.filter((b) => isUp(b) && b.backup)
+  return orderedBackups(lb) ? backups.slice(0, 1) : backups
+}
+
+/** Place of each enabled backup in the takeover queue, from 1. */
+export function backupQueue(nodes: BackendNode[]): Map<BackendNode, number> {
+  const queue = new Map<BackendNode, number>()
+  nodes.filter((b) => b.enabled && b.backup).forEach((b, i) => queue.set(b, i + 1))
+  return queue
 }
 
 export function lbHealth(lb: LoadBalancer): HealthSummary {

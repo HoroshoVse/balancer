@@ -2,14 +2,43 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { toast } from "sonner"
 import { Check, Copy, Eye, EyeOff, TriangleAlert, X } from "lucide-react"
 import { ApiError, api, errorMessage, isAdmin, setToken, tokenClaims } from "@/lib/api"
-import { roleLabel } from "@/lib/lbModel"
+import { plural, roleLabel } from "@/lib/lbModel"
 import { usePoll } from "@/lib/usePoll"
 import { Switch } from "@/components/Switch"
+
+interface TelegramDelivery {
+  at: string
+  ok: boolean
+  status?: number
+  description?: string
+  network?: boolean // Telegram could not be reached at all
+}
 
 interface SettingsResponse {
   telegram_bot_token_set: boolean
   telegram_chat_id: string
   notifications_enabled: boolean
+  telegram_last?: TelegramDelivery // latest alert since the server started
+}
+
+// Telegram's refusals, turned into what to do about them
+function telegramProblem(d: TelegramDelivery) {
+  const desc = d.description ?? ""
+  if (d.network) return { title: "Сервер не достучался до api.telegram.org", text: `Проверьте выход в интернет и DNS на сервере. Ошибка: ${desc}` }
+  if (d.status === 401 || d.status === 404) return { title: "Telegram не принял токен бота", text: "Скопируйте токен заново у @BotFather и сохраните." }
+  if (/chat not found/i.test(desc)) return { title: "Чат не найден", text: "Проверьте ID чата. Для личного чата сначала напишите боту /start, для группы — добавьте бота в неё." }
+  if (d.status === 403) return { title: "Бот не может писать в этот чат", text: "Нажмите «Start» в боте или добавьте его в группу. Если бот заблокирован — разблокируйте." }
+  return { title: "Telegram отклонил сообщение", text: desc || `Код ответа ${d.status}.` }
+}
+
+function ago(iso: string) {
+  const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000))
+  if (minutes < 1) return "только что"
+  if (minutes < 60) return `${minutes} ${plural(minutes, "минуту", "минуты", "минут")} назад`
+  const hours = Math.round(minutes / 60)
+  if (hours < 48) return `${hours} ${plural(hours, "час", "часа", "часов")} назад`
+  const days = Math.round(hours / 24)
+  return `${days} ${plural(days, "день", "дня", "дней")} назад`
 }
 
 interface SystemInfo {
@@ -60,6 +89,9 @@ function Telegram() {
   const [tokenSet, setTokenSet] = useState(false)
   const [chatId, setChatId] = useState("")
   const [enabled, setEnabled] = useState(false)
+  const [last, setLast] = useState<TelegramDelivery | null>(null)
+  const [testing, setTesting] = useState(false)
+  const [test, setTest] = useState<TelegramDelivery | { missing: true } | null>(null)
 
   useEffect(() => {
     api<SettingsResponse>("/settings")
@@ -67,6 +99,7 @@ function Telegram() {
         setTokenSet(data.telegram_bot_token_set)
         setChatId(data.telegram_chat_id || "")
         setEnabled(data.notifications_enabled || false)
+        setLast(data.telegram_last ?? null)
       })
       .catch((err) => toast.error(errorMessage(err)))
       .finally(() => setLoading(false))
@@ -86,6 +119,27 @@ function Telegram() {
       setSaving(false)
     }
   }
+
+  const sendTest = async () => {
+    setTesting(true)
+    setTest(null)
+    try {
+      // Empty fields fall back to the saved token and chat
+      setTest(await api<TelegramDelivery>("/settings/telegram/test", { method: "POST", json: { telegram_bot_token: token, telegram_chat_id: chatId.trim() } }))
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 400) setTest({ missing: true })
+      else toast.error(errorMessage(err))
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const testBox = (() => {
+    if (!test) return null
+    if ("missing" in test) return { ok: false, title: "Не хватает данных", text: "Укажите токен бота и ID чата." }
+    if (test.ok) return { ok: true, title: `Доставлено в чат ${chatId.trim()}`, text: enabled ? "Проверьте Telegram — там должно быть тестовое сообщение." : "Проверьте Telegram. Уведомления сейчас выключены — включите переключатель и сохраните, иначе сообщения о сбоях не придут." }
+    return { ok: false, ...telegramProblem(test) }
+  })()
 
   return (
     <section id="notify" aria-labelledby="notify-title" className={`${cardClass} sm:flex-row sm:flex-wrap sm:gap-7`}>
@@ -118,16 +172,35 @@ function Telegram() {
           <input value={chatId} disabled={loading} onChange={(e) => setChatId(e.target.value)} placeholder="например, 12345678" className={`${fieldClass} font-mono`} />
           <span className="text-[13px] font-normal text-ink-3">Чат или канал, куда бот будет писать.</span>
         </label>
-        <button type="button" onClick={save} disabled={saving || loading} className="h-11 self-start rounded-[10px] bg-cobalt px-[18px] text-[15px] font-semibold text-white hover:bg-cobalt-dark disabled:opacity-60">
-          {saving ? "Сохраняю…" : "Сохранить"}
-        </button>
+        <div className="flex flex-wrap gap-2.5">
+          <button type="button" onClick={save} disabled={saving || loading} className="h-11 rounded-[10px] bg-cobalt px-[18px] text-[15px] font-semibold text-white hover:bg-cobalt-dark disabled:opacity-60">
+            {saving ? "Сохраняю…" : "Сохранить"}
+          </button>
+          <button type="button" onClick={sendTest} disabled={testing || loading} className="h-11 rounded-[10px] border border-line px-[18px] text-[15px] font-semibold text-ink hover:bg-accent disabled:opacity-60">
+            {testing ? "Отправляю…" : "Отправить тестовое сообщение"}
+          </button>
+        </div>
+        {testBox && (
+          <p role="status" className={`flex gap-2.5 rounded-xl px-4 py-3 text-sm leading-snug ${testBox.ok ? "bg-ok-soft text-ok-text" : "bg-down-soft text-down-text"}`}>
+            {testBox.ok ? <Check className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" /> : <TriangleAlert className="mt-0.5 h-4 w-4 flex-none" aria-hidden="true" />}
+            <span>
+              <strong className="block font-semibold">{testBox.title}</strong>
+              {testBox.text}
+            </span>
+          </p>
+        )}
+        {last && (
+          <span className={`text-[13px] ${last.ok ? "text-ink-3" : "text-down-text"}`}>
+            {last.ok ? `Последнее уведомление доставлено ${ago(last.at)}.` : `Последнее уведомление не доставлено ${ago(last.at)}: ${telegramProblem(last).title.toLowerCase()}.`}
+          </span>
+        )}
       </div>
 
       <div aria-label="Так выглядят сообщения" className="flex min-w-0 flex-[2_1_260px] flex-col justify-end gap-2.5 self-stretch rounded-2xl bg-[#DDE6EE] p-5">
         <span className="self-center rounded-full bg-ink/10 px-2.5 py-0.5 text-xs text-ink-4">пример</span>
         {[
           <><b>DNS</b>: узел <b>DNS1</b> (10.0.1.8:53) не отвечает 🔴</>,
-          <>⚠️ <b>DNS</b>: основные узлы не отвечают — трафик переключён на резерв.</>,
+          <>⚠️ <b>DNS</b>: основные узлы не отвечают — трафик переключён на резерв <b>DNS2</b>.</>,
           <><b>DNS</b>: узел <b>DNS1</b> (10.0.1.8:53) снова в строю 🟢</>,
         ].map((text, i) => (
           <div key={i} className="flex max-w-[92%] flex-col gap-1.5 self-start rounded-[14px_14px_14px_4px] bg-white px-3.5 py-3 shadow-[0_1px_0_rgba(13,17,23,0.08)]">

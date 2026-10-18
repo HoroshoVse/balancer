@@ -82,6 +82,9 @@ type LoadBalancerInstance struct {
 	acmeStatus    atomic.Value // Store string
 	acmeError     atomic.Value // Store string
 	failoverState int32        // 0: init, 1: primary, 2: backup, 3: all down
+	backupServing atomic.Value // *models.BackendServer: the backup in charge in ordered mode
+	renewAlerted  sync.Map     // domain -> true after a failed certificate renewal was reported
+	notify        func(string) // sends an alert; defaults to Telegram
 
 	udpSessions sync.Map                // Map clientAddr(string) -> *udpSession
 	dns         atomic.Pointer[dnsProxy] // set while serving in DNS mode
@@ -109,6 +112,7 @@ func NewLoadBalancerInstance(config models.LoadBalancer, hc *HealthChecker) *Loa
 	inst.acmeError.Store("")
 	inst.backends.Store([]*models.BackendServer{})
 	inst.backendNames.Store("")
+	inst.backupServing.Store((*models.BackendServer)(nil))
 	inst.strategy = newStrategy(config.Algorithm, &inst.conns)
 	inst.transport = &backendTransport{
 		lbID:                 config.ID,
@@ -211,41 +215,22 @@ func (l *LoadBalancerInstance) updateBackends() {
 		}
 	}
 
-	// Failover logic: use primaries if any are healthy, otherwise use backups
+	// Failover: primaries if any are healthy, otherwise the backups; in
+	// ordered mode only the first healthy backup in list order
 	var activeBackends []*models.BackendServer
 	newState := int32(0)
-	if len(primaryBackends) > 0 {
-		activeBackends = primaryBackends
-		newState = 1 // primary
-	} else if len(backupBackends) > 0 {
-		activeBackends = backupBackends
-		newState = 2 // backup
-	} else {
-		newState = 3 // all down
-	}
-
-	// Log and alert only on transitions
-	oldState := atomic.SwapInt32(&l.failoverState, newState)
-	if oldState != newState {
-		name := html.EscapeString(l.Config.Name)
-		switch newState {
-		case 1:
-			if oldState != 0 {
-				Logger.InfoLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: primary backends recovered", l.Config.Name))
-				l.alert(fmt.Sprintf("✅ <b>%s</b>: основные узлы вернулись, резерв снова ждёт.", name))
-			}
-		case 2:
-			Logger.WarnLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: all primary backends DOWN, switching to backup nodes", l.Config.Name))
-			if oldState == 1 {
-				l.alert(fmt.Sprintf("⚠️ <b>%s</b>: основные узлы не отвечают — трафик переключён на резерв.", name))
-			}
-		case 3:
-			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("[CRITICAL] %s: ALL backends (primary + backup) are DOWN", l.Config.Name))
-			if oldState != 0 {
-				l.alert(fmt.Sprintf("❌ <b>%s</b>: недоступны все узлы, включая резерв!", name))
-			}
+	switch {
+	case len(primaryBackends) > 0:
+		activeBackends, newState = primaryBackends, 1
+	case len(backupBackends) > 0:
+		activeBackends, newState = backupBackends, 2
+		if l.Config.BackupMode == models.BackupOrdered {
+			activeBackends = backupBackends[:1]
 		}
+	default:
+		newState = 3
 	}
+	l.reportFailover(newState, activeBackends)
 
 	names := make([]string, len(activeBackends))
 	active := make(map[uint]bool, len(activeBackends))
@@ -276,8 +261,82 @@ func (l *LoadBalancerInstance) updateBackends() {
 }
 
 func (l *LoadBalancerInstance) alert(msg string) {
-	if l.healthChecker != nil {
+	if l.notify != nil {
+		l.notify(msg)
+	} else if l.healthChecker != nil {
 		l.healthChecker.SendTelegramAlert(msg)
+	}
+}
+
+func (l *LoadBalancerInstance) hasBackups() bool {
+	for _, b := range l.Config.BackendGroup.Backends {
+		if b.Enabled && b.Backup {
+			return true
+		}
+	}
+	return false
+}
+
+// boldNames formats node names for an alert: "<b>node2</b>, <b>node3</b>".
+func boldNames(backends []*models.BackendServer) string {
+	names := make([]string, len(backends))
+	for i, b := range backends {
+		names[i] = "<b>" + html.EscapeString(b.Name) + "</b>"
+	}
+	return strings.Join(names, ", ")
+}
+
+// reportFailover logs and alerts when the set of nodes taking the traffic
+// changes between primaries, backups and nothing. A fresh instance (state 0)
+// stays quiet, so restarts and config changes don't repeat old news.
+func (l *LoadBalancerInstance) reportFailover(newState int32, active []*models.BackendServer) {
+	oldState := atomic.SwapInt32(&l.failoverState, newState)
+	var serving *models.BackendServer
+	if newState == 2 && l.Config.BackupMode == models.BackupOrdered {
+		serving = active[0]
+	}
+	previous, _ := l.backupServing.Swap(serving).(*models.BackendServer)
+
+	name := html.EscapeString(l.Config.Name)
+	switch {
+	case oldState == newState && newState == 2 && serving != nil && previous != nil && serving.ID != previous.ID:
+		// Ordered backups: the one in charge changed
+		if l.healthChecker != nil && !l.healthChecker.IsHealthy(previous.ID) {
+			Logger.WarnLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: backup %s DOWN, switching to the next backup %s", l.Config.Name, previous.Name, serving.Name))
+			l.alert(fmt.Sprintf("⚠️ <b>%s</b>: резерв <b>%s</b> не отвечает — трафик переключён на следующий, %s.", name, html.EscapeString(previous.Name), boldNames(active)))
+		} else {
+			Logger.InfoLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: backup %s is back, traffic returns to it from %s", l.Config.Name, serving.Name, previous.Name))
+			l.alert(fmt.Sprintf("↩️ <b>%s</b>: резерв %s снова отвечает — трафик вернулся на него, <b>%s</b> снова ждёт.", name, boldNames(active), html.EscapeString(previous.Name)))
+		}
+	case oldState == newState:
+	case newState == 1:
+		if oldState == 0 {
+			break
+		}
+		Logger.InfoLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: primary backends recovered", l.Config.Name))
+		if l.hasBackups() {
+			l.alert(fmt.Sprintf("✅ <b>%s</b>: основные узлы вернулись, резерв снова ждёт.", name))
+		} else {
+			l.alert(fmt.Sprintf("✅ <b>%s</b>: узлы снова отвечают, трафик идёт.", name))
+		}
+	case newState == 2:
+		Logger.WarnLB(l.Config.Name, fmt.Sprintf("[FAILOVER] %s: all primary backends DOWN, switching to backup nodes", l.Config.Name))
+		switch oldState {
+		case 1:
+			l.alert(fmt.Sprintf("⚠️ <b>%s</b>: основные узлы не отвечают — трафик переключён на резерв %s.", name, boldNames(active)))
+		case 3:
+			l.alert(fmt.Sprintf("⚠️ <b>%s</b>: резерв снова отвечает — трафик идёт на %s. Основные узлы пока не отвечают.", name, boldNames(active)))
+		}
+	case newState == 3:
+		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("[CRITICAL] %s: ALL backends (primary + backup) are DOWN", l.Config.Name))
+		if oldState == 0 {
+			break
+		}
+		if l.hasBackups() {
+			l.alert(fmt.Sprintf("❌ <b>%s</b>: недоступны все узлы, включая резерв!", name))
+		} else {
+			l.alert(fmt.Sprintf("❌ <b>%s</b>: не отвечает ни один узел — трафику некуда идти!", name))
+		}
 	}
 }
 

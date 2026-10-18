@@ -13,6 +13,7 @@ export interface BuilderForm {
   listen_ip: string
   listen_port: string
   algorithm: string
+  backup_mode: "all" | "ordered"
   check: Check
   interval: string
   acme_enabled: boolean
@@ -71,6 +72,7 @@ export function fromRecipe(r: Recipe): BuilderForm {
     listen_ip: "0.0.0.0",
     listen_port: String(r.port),
     algorithm: r.algorithm,
+    backup_mode: "all",
     check: r.check,
     interval: "10",
     acme_enabled: !!r.acme,
@@ -104,6 +106,7 @@ export function fromLB(lb: LoadBalancer): BuilderForm {
     listen_ip: lb.listen_ip || "0.0.0.0",
     listen_port: String(lb.listen_port),
     algorithm: lb.algorithm || "round_robin",
+    backup_mode: lb.backup_mode === "ordered" ? "ordered" : "all",
     check,
     interval: String(first?.hc_interval || 10),
     acme_enabled: !!(lb.acme_enabled || lb.auto_ssl),
@@ -170,6 +173,7 @@ export function toPayload(f: BuilderForm, id?: number): Record<string, unknown> 
     listen_ip: f.listen_ip.trim(),
     listen_port: Number(f.listen_port),
     algorithm: f.algorithm,
+    backup_mode: f.backup_mode,
     acme_enabled: ssl && f.acme_enabled,
     auto_ssl: ssl && f.acme_enabled,
     acme_email: f.acme_email.trim(),
@@ -316,7 +320,9 @@ export function describe(f: BuilderForm): string {
   const primaries = names(false)
   const backups = names(true)
   let s = `${f.name.trim() || "Балансировщик"} принимает ${what[f.kind]} на ${f.listen_ip.trim() || "0.0.0.0"}:${f.listen_port}; ${how[f.algorithm] ?? "запросы идут на"} ${primaries.length ? primaries.join(", ") : "— основных узлов нет"}.`
-  if (backups.length) s += ` Если основные не ответят, подхватит ${backups.join(", ")}.`
+  if (backups.length === 1) s += ` Если основные не ответят, подхватит ${backups[0]}.`
+  else if (backups.length > 1 && f.backup_mode === "ordered") s += ` Если основные не ответят, подхватит ${backups[0]}${backups.slice(1).map((b) => `, а если и он упадёт — ${b}`).join("")}.`
+  else if (backups.length > 1) s += ` Если основные не ответят, подхватят ${backups.join(", ")} вместе.`
   if (hasTLS(f.kind) && f.acme_enabled && f.acme_domains.trim()) s += ` Сертификат для ${f.acme_domains.trim()} выпустит Let's Encrypt.`
   if (hasTLS(f.kind) && f.http_redirect) s += " Запросы на 80-й порт переадресуются на HTTPS."
   return s

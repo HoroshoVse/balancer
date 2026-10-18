@@ -17,6 +17,10 @@ type LoadBalancer struct {
 	ListenPort int   `json:"listen_port"`
 	Algorithm string `json:"algorithm"` // round_robin, least_conn, etc.
 
+	// How backup nodes take over when no primary is healthy: all together
+	// (BackupAll, the default) or one at a time in list order (BackupOrdered)
+	BackupMode string `json:"backup_mode"`
+
 	BackendGroupID uint          `json:"backend_group_id"`
 	BackendGroup   BackendGroup  `json:"backend_group"`
 
@@ -78,6 +82,7 @@ type BackendServer struct {
 	Address   string         `json:"address"` // IP or Hostname
 	Port      int            `json:"port"`
 	Weight    int            `json:"weight" gorm:"default:1"`
+	Position  int            `json:"position"` // place in the balancer's list; backups take over in this order
 	Enabled   bool           `json:"enabled"`
 	Backup    bool           `json:"backup" gorm:"default:false"` // Backup server
 	MaxConns  int            `json:"max_conns"` // Maximum concurrent connections
@@ -96,6 +101,17 @@ type BackendServer struct {
 	// State (Not persisted in DB, but tracked by HealthChecker)
 	Status    string         `gorm:"-" json:"status"` // UP, DOWN, DISABLED, DRAIN
 	Metrics   map[string]interface{} `gorm:"-" json:"metrics,omitempty"`
+}
+
+const (
+	BackupAll     = "all"
+	BackupOrdered = "ordered"
+)
+
+// OrderedBackends sorts a balancer's nodes as listed in the UI; pass it to
+// Preload("BackendGroup.Backends", ...).
+func OrderedBackends(db *gorm.DB) *gorm.DB {
+	return db.Order("position, id")
 }
 
 const (
