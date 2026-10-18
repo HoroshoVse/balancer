@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Link } from "react-router-dom"
 import { toast } from "sonner"
-import { Lightbulb } from "lucide-react"
+import { Lightbulb, ShieldAlert } from "lucide-react"
 import type { Advice } from "@/lib/advice"
 import { canEdit, errorMessage } from "@/lib/api"
 import { updateLB } from "@/lib/lbActions"
@@ -33,6 +33,8 @@ export function StatusPill({ lb, size = "sm" }: { lb: LoadBalancer; size?: "sm" 
 export function AdviceCard({ advice, lb, onApplied, compact }: { advice: Advice; lb: LoadBalancer; onApplied: () => void; compact?: boolean }) {
   const [busy, setBusy] = useState(false)
   const warn = advice.tone === "warn"
+  const tone = advice.tone === "danger" ? "bg-down-soft text-down-text" : warn ? "bg-warn-soft text-warn-text" : "bg-ground text-ink-4"
+  const Icon = advice.tone === "danger" ? ShieldAlert : Lightbulb
   const apply = async () => {
     if (!advice.fix) return
     setBusy(true)
@@ -47,11 +49,11 @@ export function AdviceCard({ advice, lb, onApplied, compact }: { advice: Advice;
     }
   }
   return (
-    <div className={`flex gap-3 rounded-[14px] ${compact ? "px-3.5 py-3" : "p-4"} ${warn ? "bg-warn-soft text-warn-text" : "bg-ground text-ink-4"}`}>
-      <Lightbulb className="mt-0.5 h-5 w-5 flex-none" aria-hidden="true" />
+    <div className={`flex gap-3 rounded-[14px] ${compact ? "px-3.5 py-3" : "p-4"} ${tone}`}>
+      <Icon className="mt-0.5 h-5 w-5 flex-none" aria-hidden="true" />
       <div className="flex min-w-0 flex-col gap-1.5 text-sm leading-snug">
         <strong className="font-semibold">{advice.title}</strong>
-        <span>{advice.text}</span>
+        <span className="[overflow-wrap:anywhere]">{advice.text}</span>
         {canEdit() && advice.fix && (
           <button
             type="button"

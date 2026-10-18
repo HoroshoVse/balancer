@@ -142,7 +142,7 @@ function Card({ lb, rps, history, onChanged, onDelete }: { lb: LoadBalancer; rps
 
       <MiniTopology lb={lb} rps={rps} />
 
-      {advice.filter((a) => a.tone === "warn").slice(0, 1).map((a) => (
+      {advice.filter((a) => a.tone !== "info").slice(0, 1).map((a) => (
         <AdviceCard key={a.id} advice={a} lb={lb} onApplied={onChanged} compact />
       ))}
 

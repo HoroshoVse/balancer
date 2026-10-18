@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"html"
 	"math/big"
 	"net"
 	"net/http"
@@ -44,6 +45,16 @@ func (l *LoadBalancerInstance) buildTLSConfig() (*tls.Config, error) {
 	}
 }
 
+// ACME settings; variables so tests can use a temporary directory, a fake CA
+// and short delays.
+var (
+	certStoragePath = "./certs/certmagic" // the persistent volume mapped in docker-compose
+	acmeCA          = certmagic.LetsEncryptProductionCA
+	acmeStartWait   = 5 * time.Second // how long Start waits for a stored certificate to load
+	acmeRetryMin    = 2 * time.Minute // first retry; doubles up to acmeRetryMax (stays under Let's Encrypt's 5 failures/hour)
+	acmeRetryMax    = time.Hour
+)
+
 // acmeTLSConfig manages certificates with a certmagic config owned by this
 // instance, so balancers with different ACME settings don't overwrite each other.
 func (l *LoadBalancerInstance) acmeTLSConfig() *tls.Config {
@@ -53,12 +64,23 @@ func (l *LoadBalancerInstance) acmeTLSConfig() *tls.Config {
 			return cfg, nil
 		},
 	})
-	// Store certificates in the persistent volume mapped in docker-compose
+	var cached sync.Map // domain -> true once its certificate is being served
+	storage := newCertStorage()
 	cfg = certmagic.New(cache, certmagic.Config{
-		Storage: &certmagic.FileStorage{Path: "./certs/certmagic"},
+		Storage: storage,
+		OnEvent: func(_ context.Context, event string, data map[string]any) error {
+			if event == "cached_managed_cert" {
+				if sans, ok := data["sans"].([]string); ok {
+					for _, name := range sans {
+						cached.Store(strings.ToLower(name), true)
+					}
+				}
+			}
+			return nil
+		},
 	})
 	issuer := certmagic.NewACMEIssuer(cfg, certmagic.ACMEIssuer{
-		CA:     certmagic.LetsEncryptProductionCA,
+		CA:     acmeCA,
 		Email:  l.Config.ACMEEmail, // optional; Let's Encrypt rejects made-up addresses
 		Agreed: true,
 	})
@@ -70,31 +92,109 @@ func (l *LoadBalancerInstance) acmeTLSConfig() *tls.Config {
 		cache.Stop()
 	}()
 
+	domains := l.acmeDomains()
+	if len(domains) > 0 {
+		l.acmeStatus.Store("issuing")
+		firstAttempt := make(chan struct{})
+		missing := func() []string {
+			var names []string
+			for _, d := range domains {
+				if _, ok := cached.Load(strings.ToLower(d)); !ok {
+					names = append(names, d)
+				}
+			}
+			return names
+		}
+		go l.manageCertificates(cfg, storage, issuer.IssuerKey(), domains, missing, firstAttempt)
+		// A certificate already in storage loads in milliseconds: wait for it so
+		// clients don't hit "no certificate available" right after a restart.
+		// Obtaining a new one can take longer; that continues in the background.
+		select {
+		case <-firstAttempt:
+		case <-time.After(acmeStartWait):
+		case <-l.ctx.Done():
+		}
+	}
+	return cfg.TLSConfig()
+}
+
+// acmeDomains returns the Let's Encrypt domains, or nil when ACME is off.
+func (l *LoadBalancerInstance) acmeDomains() []string {
+	if !l.Config.UsesACME() {
+		return nil
+	}
 	var domains []string
 	for _, d := range strings.Split(l.Config.ACMEDomains, ",") {
 		if d = strings.TrimSpace(d); d != "" {
 			domains = append(domains, d)
 		}
 	}
-	if len(domains) > 0 {
-		l.acmeStatus.Store("issuing")
-		go func() {
-			err := cfg.ManageSync(l.ctx, domains)
-			if l.ctx.Err() != nil {
-				return
+	return domains
+}
+
+// manageCertificates loads or obtains the certificates and keeps retrying
+// with backoff until it succeeds: certmagic itself gives up on a certificate
+// it cannot load. Before every attempt it repairs damaged files in storage.
+// Failures and the recovery are reported to Telegram once each.
+func (l *LoadBalancerInstance) manageCertificates(cfg *certmagic.Config, storage atomicFileStorage, issuerKey string, domains []string, missing func() []string, firstAttempt chan<- struct{}) {
+	name := l.Config.Name
+	delay := acmeRetryMin
+	alerted := false
+	for attempt := 0; ; attempt++ {
+		for _, note := range storage.repair(l.ctx, issuerKey, domains) {
+			Logger.WarnLB(name, fmt.Sprintf("%s: %s", name, note))
+			l.alert(fmt.Sprintf("🛠 <b>%s</b>: %s", html.EscapeString(name), html.EscapeString(note)))
+		}
+
+		err := cfg.ManageSync(l.ctx, domains)
+		if attempt == 0 {
+			close(firstAttempt)
+		}
+		if l.ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			l.acmeStatus.Store("ok")
+			l.acmeError.Store("")
+			Logger.InfoLB(name, fmt.Sprintf("ACME certificate ready for domains: %v", domains))
+			if alerted {
+				l.alert(fmt.Sprintf("✅ <b>%s</b>: сертификат для %s снова в порядке.", html.EscapeString(name), html.EscapeString(strings.Join(domains, ", "))))
 			}
-			if err != nil {
-				l.acmeStatus.Store("error")
-				l.acmeError.Store(err.Error())
-				Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to manage ACME domains for %s: %v", l.Config.Name, err))
-			} else {
-				l.acmeStatus.Store("ok")
-				l.acmeError.Store("")
-				Logger.InfoLB(l.Config.Name, fmt.Sprintf("ACME certificate successfully issued for domains: %v", domains))
+			return
+		}
+
+		l.acmeStatus.Store("error")
+		l.acmeError.Store(err.Error())
+		noCert := missing()
+		Logger.ErrorLB(name, fmt.Sprintf("Failed to manage ACME domains for %s: %v (no certificate for %v); retrying in %s", name, err, noCert, delay))
+		if !alerted {
+			alerted = true
+			impact := "Текущий сертификат пока действует, клиенты подключаются."
+			if len(noCert) > 0 {
+				impact = fmt.Sprintf("Сертификата для %s нет — клиенты получают ошибку TLS.", strings.Join(noCert, ", "))
 			}
-		}()
+			l.alert(fmt.Sprintf("🔒 <b>%s</b>: не удалось загрузить или выпустить сертификат. %s Повторю через %s.\n<code>%s</code>",
+				html.EscapeString(name), html.EscapeString(impact), russianDelay(delay), html.EscapeString(err.Error())))
+		}
+		select {
+		case <-l.ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, acmeRetryMax)
 	}
-	return cfg.TLSConfig()
+}
+
+// russianDelay formats a retry delay for alerts: "2 мин", "1 ч", "30 с".
+func russianDelay(d time.Duration) string {
+	switch {
+	case d >= time.Hour && d%time.Hour == 0:
+		return fmt.Sprintf("%d ч", d/time.Hour)
+	case d >= time.Minute:
+		return fmt.Sprintf("%d мин", d/time.Minute)
+	default:
+		return fmt.Sprintf("%d с", max(d/time.Second, 1))
+	}
 }
 
 func generateSelfSignedCert() (*tls.Config, error) {

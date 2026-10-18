@@ -5,7 +5,7 @@ import { kindOf } from "./lbModel"
 
 export interface Advice {
   id: string
-  tone: "warn" | "info"
+  tone: "danger" | "warn" | "info"
   title: string
   text: string
   /** Applied in place through the API. */
@@ -23,6 +23,15 @@ export function adviceFor(lb: LoadBalancer): Advice[] {
   const checked = nodes.filter((b) => b.hc_enabled)
   const dnsChecked = checked.some((b) => b.hc_protocol === "dns")
   const out: Advice[] = []
+
+  if ((lb.acme_enabled || lb.auto_ssl) && lb.acme_status === "error") {
+    out.push({
+      id: "acme-error",
+      tone: "danger",
+      title: "Не удалось загрузить или выпустить сертификат",
+      text: `Сервер сам повторяет попытки и чинит повреждённые файлы сертификата. Ошибка: ${lb.acme_error || "неизвестна"}`,
+    })
+  }
 
   if (nodes.length > 0 && checked.length === 0) {
     const proto = kind === "dns" ? "dns" : kind === "udp" ? "udp" : kind === "http" || kind === "https_term" ? "http" : "tcp"

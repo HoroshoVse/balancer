@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -726,6 +727,12 @@ func (l *LoadBalancerInstance) startHTTP() error {
 		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       msOr(l.Config.IdleTimeout, defaultHTTPIdle),
+	}
+	if tlsConfig != nil {
+		// Failed handshakes are summarised once a minute instead of one line each
+		hlog := newHandshakeLog(l.Config.Name, l.acmeDomains())
+		server.ErrorLog = log.New(hlog, "", 0)
+		go hlog.run(l.ctx, time.Minute)
 	}
 
 	errChan := make(chan error, 3)
