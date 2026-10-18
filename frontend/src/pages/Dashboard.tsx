@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom"
-import { Check, Globe, Plus, ShieldCheck, Terminal, TriangleAlert } from "lucide-react"
+import { ArrowDown, ArrowUp, Check, Globe, Plus, ShieldCheck, Terminal, TriangleAlert } from "lucide-react"
 import { api, canEdit } from "@/lib/api"
 import { humanize, type EventKind } from "@/lib/humanize"
 import { useLBs } from "@/lib/lbs"
@@ -224,11 +224,12 @@ function formatUptime(seconds: number) {
 
 const loadColor = (percent: number) => (percent >= 90 ? "bg-down" : percent >= 70 ? "bg-warn" : undefined)
 
-function HostPanel({ label, value, unit, chart, note, last }: { label: string; value: string; unit: string; chart: React.ReactNode; note: React.ReactNode; last?: boolean }) {
+function HostPanel({ label, icon, value, unit, chart, note, last }: { label: string; icon?: React.ReactNode; value: string; unit: string; chart: React.ReactNode; note: React.ReactNode; last?: boolean }) {
   return (
     <div className={`flex min-w-[240px] flex-1 flex-col gap-3 py-5 sm:px-6 sm:first:pl-0 sm:last:pr-0 ${last ? "" : "border-b border-line-soft sm:border-b-0 sm:border-r"}`}>
       <span className="text-[13px] text-ink-3">{label}</span>
       <span className="flex items-baseline gap-2">
+        {icon && <span className="self-center">{icon}</span>}
         <span className="font-display text-[40px] font-semibold leading-none tracking-tight">{value}</span>
         <span className="text-sm text-ink-3">{unit}</span>
       </span>
@@ -248,7 +249,9 @@ function Server({ stats }: { stats: HostStats | null }) {
   const tx = history.map((h) => h.net_tx_bps)
   const netScale = Math.max(...rx, ...tx, 0)
   const memPercent = mem[mem.length - 1] ?? 0
-  const total = formatBits((last?.net_rx_bps ?? 0) + (last?.net_tx_bps ?? 0))
+  // The headline is whichever direction is busier right now
+  const inbound = (last?.net_rx_bps ?? 0) >= (last?.net_tx_bps ?? 0)
+  const peak = formatBits(inbound ? last?.net_rx_bps ?? 0 : last?.net_tx_bps ?? 0)
   const memUsed = bytesParts(last?.mem_used ?? 0)
   const rxNow = formatBits(last?.net_rx_bps ?? 0)
   const txNow = formatBits(last?.net_tx_bps ?? 0)
@@ -295,8 +298,15 @@ function Server({ stats }: { stats: HostStats | null }) {
           />
           <HostPanel
             label={stats.interface ? `Сеть · ${stats.interface}` : "Сеть"}
-            value={total.value}
-            unit={total.unit}
+            icon={
+              inbound ? (
+                <ArrowUp className="h-7 w-7 text-cobalt" strokeWidth={2.5} aria-label="вход" />
+              ) : (
+                <ArrowDown className="h-7 w-7 text-ok" strokeWidth={2.5} aria-label="выход" />
+              )
+            }
+            value={peak.value}
+            unit={peak.unit}
             chart={
               <div aria-hidden="true" className="flex flex-col gap-0.5">
                 <Bars values={rx} scale={netScale} color="bg-cobalt" height={27} gap={2} fade={false} slots={60} />
@@ -307,8 +317,14 @@ function Server({ stats }: { stats: HostStats | null }) {
             }
             note={
               <span className="flex flex-wrap gap-x-4">
-                <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-cobalt" />вход {rxNow.value} {rxNow.unit}</span>
-                <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-ok" />выход {txNow.value} {txNow.unit}</span>
+                <span className={`inline-flex items-center gap-1 ${inbound ? "font-medium text-ink" : ""}`}>
+                  <ArrowUp className="h-4 w-4 text-cobalt" strokeWidth={2.5} aria-hidden="true" />
+                  вход {rxNow.value} {rxNow.unit}
+                </span>
+                <span className={`inline-flex items-center gap-1 ${inbound ? "" : "font-medium text-ink"}`}>
+                  <ArrowDown className="h-4 w-4 text-ok" strokeWidth={2.5} aria-hidden="true" />
+                  выход {txNow.value} {txNow.unit}
+                </span>
               </span>
             }
             last

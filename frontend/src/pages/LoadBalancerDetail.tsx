@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 import { Ellipsis, Globe, ShieldCheck } from "lucide-react"
@@ -27,13 +27,89 @@ function nodeState(lb: LoadBalancer, b: BackendNode): NodeState {
   return activeNodes(lb).some((a) => a.id === b.id) ? "active" : "standby"
 }
 
-function FlowBand({ rps }: { rps: number }) {
-  if (rps <= 0) return <div aria-hidden="true" className="min-w-8 flex-1 border-t-2 border-dashed border-[#4A5566]" />
-  return (
-    <div aria-hidden="true" className="relative h-2.5 min-w-8 flex-1 overflow-hidden rounded-full bg-cobalt">
-      <div className="flow-dashes absolute inset-y-0 left-0 right-[-28px] animate-flow" />
-    </div>
-  )
+// --- Topology: blocks laid out with flex, connectors drawn in SVG from measured positions ---
+
+type Box = { l: number; t: number; r: number; b: number; cy: number }
+type Link = { d: string; style: "live" | "idle" | "down" | "off" }
+type Geometry = { wide: boolean; links: Link[]; label?: { x: number; y: number; anchor: "middle" | "start" } }
+
+// Left to right when everything fits: clients 64 + listen 180 + rule 180 + nodes 240,
+// gaps of at least 64 + 36 + 56 for the links, 64 of padding. Narrower diagrams stack.
+const WIDE_MIN = 884
+const TRUNK = 32 // stacked layout: x of the vertical line, the centre of the clients circle
+
+function boxOf(el: Element | null, origin: DOMRect): Box | null {
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  return { l: r.left - origin.left, t: r.top - origin.top, r: r.right - origin.left, b: r.bottom - origin.top, cy: (r.top + r.bottom) / 2 - origin.top }
+}
+
+// Horizontal link between two boxes in a row, curved when their centres differ
+function across(a: Box, b: Box) {
+  const mid = (a.r + b.l) / 2
+  return `M ${a.r} ${a.cy} C ${mid} ${a.cy}, ${mid} ${b.cy}, ${b.l} ${b.cy}`
+}
+
+const linkStroke: Record<Link["style"], string> = { live: "#2E4BFF", idle: "#4A5566", down: "#7A2E12", off: "#2A3340" }
+
+function useTopologyGeometry(edge: Link["style"], nodeStyles: Link["style"][]) {
+  const sectionRef = useRef<HTMLElement>(null)
+  const clientsRef = useRef<HTMLSpanElement>(null)
+  const listenRef = useRef<HTMLDivElement>(null)
+  const ruleRef = useRef<HTMLDivElement>(null)
+  const nodeRefs = useRef<(HTMLDivElement | null)[]>([])
+  const [geo, setGeo] = useState<Geometry>({ wide: true, links: [] })
+  const styles = useRef({ edge, nodeStyles })
+
+  const measure = useCallback(() => {
+    const section = sectionRef.current
+    if (!section) return
+    const origin = section.getBoundingClientRect()
+    const wide = section.clientWidth >= WIDE_MIN
+    const clients = boxOf(clientsRef.current, origin)
+    const listen = boxOf(listenRef.current, origin)
+    const rule = boxOf(ruleRef.current, origin)
+    const { edge, nodeStyles } = styles.current
+    const links: Link[] = []
+    let label: Geometry["label"]
+    if (clients && listen && rule) {
+      if (wide) {
+        links.push({ d: across(clients, listen), style: edge }, { d: across(listen, rule), style: edge })
+        label = { x: (clients.r + listen.l) / 2, y: clients.cy - 14, anchor: "middle" }
+      } else {
+        const x = clients.l + TRUNK
+        links.push({ d: `M ${x} ${clients.b} V ${listen.t}`, style: edge }, { d: `M ${x} ${listen.b} V ${rule.t}`, style: edge })
+        label = { x: x + 14, y: (clients.b + listen.t) / 2 + 4, anchor: "start" }
+      }
+      nodeRefs.current.forEach((el, i) => {
+        const node = boxOf(el, origin)
+        if (!node) return
+        const d = wide
+          ? across(rule, node)
+          : `M ${rule.l + TRUNK} ${rule.b} V ${node.cy - 14} Q ${rule.l + TRUNK} ${node.cy}, ${rule.l + TRUNK + 14} ${node.cy} H ${node.l}`
+        links.push({ d, style: nodeStyles[i] ?? "idle" })
+      })
+    }
+    const next: Geometry = { wide, links, label }
+    setGeo((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next))
+  }, [])
+
+  // After every render (data polls move things) and on any resize
+  useLayoutEffect(() => {
+    styles.current = { edge, nodeStyles }
+    measure()
+  })
+  const nodeCount = nodeStyles.length
+  useEffect(() => {
+    const section = sectionRef.current
+    if (!section) return
+    const ro = new ResizeObserver(() => measure())
+    ro.observe(section)
+    for (const el of [clientsRef.current, listenRef.current, ruleRef.current, ...nodeRefs.current]) if (el) ro.observe(el)
+    return () => ro.disconnect()
+  }, [measure, nodeCount])
+
+  return { geo, sectionRef, clientsRef, listenRef, ruleRef, nodeRefs }
 }
 
 function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
@@ -48,46 +124,73 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
     down: { ring: "border-[3px] border-[#FF8A5B] text-[#FFB08F]", label: "DOWN", card: "border border-[#7A2E12] bg-[#1A0F0B]", text: "не отвечает на проверки" },
     off: { ring: "border-[3px] border-[#3A4555] text-rail-muted", label: "ВЫКЛ", card: "border border-dashed border-[#2A3340] bg-rail", text: "выведен из работы" },
   }
+  const states = nodes.map((b) => nodeState(lb, b))
+  const linkStyle = (st: NodeState): Link["style"] => (st === "active" ? (live > 0 ? "live" : "idle") : st === "down" ? "down" : st === "off" ? "off" : "idle")
+  const { geo, sectionRef, clientsRef, listenRef, ruleRef, nodeRefs } = useTopologyGeometry(live > 0 ? "live" : "idle", states.map(linkStyle))
+
+  const { wide } = geo
   return (
-    <section aria-label="Схема балансировщика" className="flex flex-wrap items-center gap-y-5 rounded-[22px] bg-rail px-6 py-7 text-rail-text sm:px-8">
-      <div className="flex w-[110px] flex-none flex-col items-center gap-2 text-center">
-        <span className="grid h-16 w-16 place-items-center rounded-full border border-[#2A3340]">
-          <Globe className="h-7 w-7 text-cobalt-light" aria-hidden="true" />
-        </span>
-        <span className="text-[13px] text-[#A9B3C1]">Клиенты</span>
-      </div>
-      <div className="flex min-w-[60px] flex-1 flex-col items-center gap-1.5">
-        <span className="font-mono text-[11px] text-cobalt-light">{live > 0 ? `${formatNumber(live, live < 10 ? 1 : 0)} запр/с` : "тихо"}</span>
-        <FlowBand rps={live} />
-      </div>
-      <div className={`flex w-[230px] flex-none flex-col gap-2 rounded-2xl border bg-rail-2 p-4 ${failed ? "border-down" : "border-[#222B36]"}`}>
-        <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-rail-muted">Приём</span>
-        <span className="font-mono text-base text-white">{listenAddr(lb)}</span>
-        <span className="text-[13px] text-[#C6CEDA]">{kindLabel[kind]}{lb.http3_enabled ? " · HTTP/3" : ""}</span>
-        {kind === "https_term" && (
-          <span className="inline-flex items-center gap-1.5 text-[13px] text-ok-pale">
-            <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
-            {lb.acme_enabled || lb.auto_ssl ? `${domain || "домен не указан"} · Let's Encrypt` : lb.cert_data || lb.cert_path ? "свой сертификат" : "самоподписанный"}
-          </span>
+    <section ref={sectionRef} aria-label="Схема балансировщика" className="relative rounded-[22px] bg-rail px-6 py-8 text-rail-text sm:px-8">
+      <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible" fill="none">
+        {/* Traffic last, so idle links that share its start don't cross over it */}
+        {[...geo.links].sort((a, b) => Number(a.style === "live") - Number(b.style === "live")).map((link, i) =>
+          link.style === "live" ? (
+            <g key={i}>
+              <path d={link.d} stroke={linkStroke.live} strokeWidth={8} strokeLinecap="round" />
+              <path d={link.d} stroke="rgba(255,255,255,0.75)" strokeWidth={8} className="stream-dashes" />
+            </g>
+          ) : (
+            <path key={i} d={link.d} stroke={linkStroke[link.style]} strokeWidth={2} strokeDasharray="5 6" />
+          ),
         )}
-        {failed && <span className="text-[13px] text-[#FF9A6B]">не запущен</span>}
-      </div>
-      <div className="min-w-8 flex-1"><FlowBand rps={live} /></div>
-      <div className="flex w-[200px] flex-none flex-col gap-2 rounded-2xl border border-[#3A4DB8] bg-cobalt-deep p-4">
-        <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#A8B6FF]">Правило</span>
-        <span className="text-base font-semibold text-white">{algorithmLabel[lb.algorithm] ?? lb.algorithm}</span>
-        {nodes.some((b) => b.backup) && <span className="text-[13px] text-[#C9D2FF]">резерв ждёт отказа основных</span>}
-        {lb.sticky_sessions_enabled && <span className="text-[13px] text-[#C9D2FF]">закрепление по {lb.sticky_session_type === "cookie" ? "cookie" : "IP"}</span>}
-      </div>
-      <div className="flex min-w-[300px] flex-[1_1_360px] flex-col gap-3.5">
-        {nodes.length === 0 && <span className="pl-4 text-sm text-[#A9B3C1]">узлов нет</span>}
-        {nodes.map((b) => {
-          const st = nodeState(lb, b)
-          const r = ring[st]
-          return (
-            <div key={b.id ?? b.address} className="flex items-center">
-              {st === "active" ? <FlowBand rps={live} /> : <div aria-hidden="true" className={`min-w-8 flex-1 border-t-2 border-dashed ${st === "down" ? "border-[#7A2E12]" : "border-[#4A5566]"}`} />}
-              <div className={`flex w-[250px] flex-none items-center gap-3.5 rounded-2xl px-4 py-3.5 ${r.card}`}>
+        {geo.label && (
+          <text x={geo.label.x} y={geo.label.y} textAnchor={geo.label.anchor} className="fill-cobalt-light font-mono text-[11px]">
+            {live > 0 ? `${formatNumber(live, live < 10 ? 1 : 0)} запр/с` : "тихо"}
+          </text>
+        )}
+      </svg>
+
+      <div className={`relative flex ${wide ? "items-center gap-0" : "flex-col items-stretch gap-12"}`}>
+        <div className={`flex flex-none items-center ${wide ? "relative w-16 justify-center" : "gap-3"}`}>
+          <span ref={clientsRef} className="grid h-16 w-16 flex-none place-items-center rounded-full border border-[#2A3340] bg-rail">
+            <Globe className="h-7 w-7 text-cobalt-light" aria-hidden="true" />
+          </span>
+          <span className={`text-[13px] text-[#A9B3C1] ${wide ? "absolute left-1/2 top-full mt-2 -translate-x-1/2" : ""}`}>Клиенты</span>
+        </div>
+        {wide && <div aria-hidden="true" className="min-w-[64px] flex-1" />}
+        <div ref={listenRef} className={`flex flex-none flex-col gap-2 rounded-2xl border bg-rail-2 p-4 ${wide ? "w-[180px]" : ""} ${failed ? "border-down" : "border-[#222B36]"}`}>
+          <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-rail-muted">Приём</span>
+          <span className="break-all font-mono text-base text-white">{listenAddr(lb)}</span>
+          <span className="text-[13px] text-[#C6CEDA]">{kindLabel[kind]}{lb.http3_enabled ? " · HTTP/3" : ""}</span>
+          {kind === "https_term" && (
+            <span className="inline-flex items-center gap-1.5 text-[13px] text-ok-pale">
+              <ShieldCheck className="h-3.5 w-3.5 flex-none" aria-hidden="true" />
+              {lb.acme_enabled || lb.auto_ssl ? `${domain || "домен не указан"} · Let's Encrypt` : lb.cert_data || lb.cert_path ? "свой сертификат" : "самоподписанный"}
+            </span>
+          )}
+          {failed && <span className="text-[13px] text-[#FF9A6B]">не запущен</span>}
+        </div>
+        {wide && <div aria-hidden="true" className="min-w-[36px] flex-1" />}
+        <div ref={ruleRef} className={`flex flex-none flex-col gap-2 rounded-2xl border border-[#3A4DB8] bg-cobalt-deep p-4 ${wide ? "w-[180px]" : ""}`}>
+          <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-[#A8B6FF]">Правило</span>
+          <span className="text-base font-semibold text-white">{algorithmLabel[lb.algorithm] ?? lb.algorithm}</span>
+          {nodes.some((b) => b.backup) && <span className="text-[13px] leading-snug text-[#C9D2FF]">резерв ждёт отказа основных</span>}
+          {lb.sticky_sessions_enabled && <span className="text-[13px] text-[#C9D2FF]">закрепление по {lb.sticky_session_type === "cookie" ? "cookie" : "IP"}</span>}
+        </div>
+        {wide && <div aria-hidden="true" className="min-w-[56px] flex-1" />}
+        <div className={`flex flex-none flex-col gap-3 ${wide ? "w-[240px]" : "pl-14"}`}>
+          {nodes.length === 0 && <span className="text-sm text-[#A9B3C1]">узлов нет</span>}
+          {nodes.map((b, i) => {
+            const st = states[i]
+            const r = ring[st]
+            return (
+              <div
+                key={b.id ?? b.address}
+                ref={(el) => {
+                  nodeRefs.current[i] = el
+                }}
+                className={`flex min-w-0 items-center gap-3.5 rounded-2xl px-4 py-3.5 ${r.card}`}
+              >
                 <span className={`grid h-11 w-11 flex-none place-items-center rounded-full font-mono text-[10px] ${r.ring}`}>{r.label}</span>
                 <span className="flex min-w-0 flex-col gap-0.5">
                   <span className="truncate text-[15px] font-semibold text-white">
@@ -99,9 +202,9 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
                   </span>
                 </span>
               </div>
-            </div>
-          )
-        })}
+            )
+          })}
+        </div>
       </div>
     </section>
   )
@@ -165,7 +268,7 @@ function NodesTable({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void
         <h2 id="nodes-title" className="font-display text-lg font-semibold tracking-tight">Узлы</h2>
         {editable && <Link to={`/lbs/${lb.id}/edit`} className="text-sm font-medium text-cobalt hover:text-cobalt-dark">+ Добавить узел</Link>}
       </div>
-      <div className="overflow-x-auto">
+      <div className="relative overflow-x-auto">
         <table className="w-full min-w-[760px] border-collapse text-sm">
           <thead>
             <tr className="text-left text-xs text-ink-3">
