@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"html"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -497,46 +496,6 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 	}
 
 	proxyStreams(clientConn, backendConn, msOr(l.Config.IdleTimeout, 0))
-}
-
-// proxyStreams copies both ways until either side closes or, when idle > 0,
-// no data has moved in either direction for that long.
-func proxyStreams(a, b net.Conn, idle time.Duration) {
-	var lastActivity atomic.Int64
-	lastActivity.Store(time.Now().UnixNano())
-
-	copyDir := func(dst, src net.Conn) {
-		defer dst.Close() // unblocks the opposite direction
-		if idle <= 0 {
-			io.Copy(dst, src) // keeps the kernel splice fast path
-			return
-		}
-		buf := make([]byte, 32*1024)
-		for {
-			src.SetReadDeadline(time.Now().Add(idle))
-			n, err := src.Read(buf)
-			if n > 0 {
-				lastActivity.Store(time.Now().UnixNano())
-				dst.SetWriteDeadline(time.Now().Add(idle))
-				if _, werr := dst.Write(buf[:n]); werr != nil {
-					return
-				}
-			}
-			if err != nil {
-				var ne net.Error
-				if errors.As(err, &ne) && ne.Timeout() && time.Since(time.Unix(0, lastActivity.Load())) < idle {
-					continue // quiet here, but the other direction is active
-				}
-				return
-			}
-		}
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); copyDir(b, a) }()
-	go func() { defer wg.Done(); copyDir(a, b) }()
-	wg.Wait()
 }
 
 func (l *LoadBalancerInstance) startUDP() error {
