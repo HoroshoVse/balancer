@@ -75,6 +75,7 @@ type LoadBalancerInstance struct {
 	transport   *backendTransport
 
 	backends     atomic.Value // []*models.BackendServer
+	fallback     atomic.Value // []*models.BackendServer: healthy backups held back while primaries are active
 	backendNames atomic.Value // string, last logged set of active backends
 	strategy     Strategy
 	conns        connCounter
@@ -85,6 +86,9 @@ type LoadBalancerInstance struct {
 	backupServing atomic.Value // *models.BackendServer: the backup in charge in ordered mode
 	renewAlerted  sync.Map     // domain -> true after a failed certificate renewal was reported
 	notify        func(string) // sends an alert; defaults to Telegram
+
+	ejected   sync.Map // backend ID -> unix nanos until which new connections avoid it (see dial.go)
+	dialFails sync.Map // backend ID -> *failTracker
 
 	udpSessions sync.Map                // Map clientAddr(string) -> *udpSession
 	dns         atomic.Pointer[dnsProxy] // set while serving in DNS mode
@@ -111,6 +115,7 @@ func NewLoadBalancerInstance(config models.LoadBalancer, hc *HealthChecker) *Loa
 	inst.acmeStatus.Store("")
 	inst.acmeError.Store("")
 	inst.backends.Store([]*models.BackendServer{})
+	inst.fallback.Store([]*models.BackendServer{})
 	inst.backendNames.Store("")
 	inst.backupServing.Store((*models.BackendServer)(nil))
 	inst.strategy = newStrategy(config.Algorithm, &inst.conns)
@@ -246,6 +251,13 @@ func (l *LoadBalancerInstance) updateBackends() {
 		activeBackends = []*models.BackendServer{}
 	}
 	l.backends.Store(activeBackends)
+	// While primaries are active the backups stay in reserve: new TCP
+	// connections turn to them when every primary refuses (see dialTCPBackend)
+	reserve := []*models.BackendServer{}
+	if newState == 1 {
+		reserve = backupBackends
+	}
+	l.fallback.Store(reserve)
 
 	// Close idle HTTP connections so requests are forced to reconnect
 	// to the new set of active backends (critical for failover/failback)
@@ -344,12 +356,27 @@ func (l *LoadBalancerInstance) reportFailover(newState int32, active []*models.B
 // connection slot on it. Callers must call releaseBackend when done.
 // preferredID (e.g. from a sticky cookie) wins if that backend is available.
 func (l *LoadBalancerInstance) pickBackend(clientIP string, preferredID uint) *models.BackendServer {
-	backends := l.backends.Load().([]*models.BackendServer)
+	return l.pickFrom(l.backends.Load().([]*models.BackendServer), clientIP, preferredID, nil)
+}
+
+// pickFrom is pickBackend over a given list, leaving out the nodes in skip.
+// Nodes that recently refused connections are avoided, unless that would
+// leave nothing: then they are tried anyway rather than turning clients away.
+func (l *LoadBalancerInstance) pickFrom(backends []*models.BackendServer, clientIP string, preferredID uint, skip map[uint]bool) *models.BackendServer {
 	candidates := make([]*models.BackendServer, 0, len(backends))
+	var ejected []*models.BackendServer
 	for _, b := range backends {
-		if b.MaxConns <= 0 || l.conns.Active(b.ID) < int64(b.MaxConns) {
-			candidates = append(candidates, b)
+		if skip[b.ID] || (b.MaxConns > 0 && l.conns.Active(b.ID) >= int64(b.MaxConns)) {
+			continue
 		}
+		if l.isEjected(b.ID) {
+			ejected = append(ejected, b)
+			continue
+		}
+		candidates = append(candidates, b)
+	}
+	if len(candidates) == 0 {
+		candidates = ejected
 	}
 
 	for len(candidates) > 0 {
@@ -446,23 +473,13 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 	defer clientConn.Close()
 
 	clientIP, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
-	target := l.pickBackend(clientIP, 0)
-	if target == nil {
-		Metrics.RecordRequest(l.Config.ID, 0, true)
-		return
+	start := time.Now()
+	target, backendConn, err := l.dialTCPBackend(clientIP)
+	Metrics.RecordRequest(l.Config.ID, time.Since(start), err != nil)
+	if err != nil {
+		return // already logged per node by dialTCPBackend
 	}
 	defer l.releaseBackend(target)
-
-	targetAddr := backendAddr(target.Address, target.Port)
-	start := time.Now()
-	backendConn, err := net.DialTimeout("tcp", targetAddr, msOr(l.Config.ConnectTimeout, defaultConnectTimeout))
-	dialLatency := time.Since(start)
-	Metrics.RecordBackendRequest(target.ID, dialLatency, err != nil)
-	Metrics.RecordRequest(l.Config.ID, dialLatency, err != nil)
-	if err != nil {
-		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
-		return
-	}
 	defer backendConn.Close()
 
 	// The PROXY header goes first on the wire, before any TLS handshake
