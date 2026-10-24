@@ -34,6 +34,7 @@ const (
 	ClientWindow = clientSlices * clientSliceSecs * time.Second
 
 	topClientsShown = 10
+	topRefusedShown = 20 // an attack comes from many addresses: show more of them
 )
 
 // ipKey is an address in 16-byte form (IPv4 as IPv4-mapped), comparable and
@@ -244,7 +245,12 @@ type tally struct {
 func (c tally) hits() uint64 { return c.accepted + c.refused }
 
 // ranked returns the n busiest keys of the window, busiest first.
-func (t *tracker) ranked(n int) []tally {
+func (t *tracker) ranked(n int) []tally { return t.rankedBy(n, false) }
+
+// rankedBy is ranked, or with refusedOnly the n keys that were refused most
+// (leaving out those never refused): a few refused addresses must not be
+// pushed out of the list by the many that were served.
+func (t *tracker) rankedBy(n int, refusedOnly bool) []tally {
 	if n <= 0 {
 		return nil
 	}
@@ -273,10 +279,17 @@ func (t *tracker) ranked(n int) []tally {
 	}
 	out := make([]tally, 0, len(sum))
 	for _, c := range sum {
+		if refusedOnly && c.refused == 0 {
+			continue
+		}
 		out = append(out, *c)
 	}
+	weight := tally.hits
+	if refusedOnly {
+		weight = func(c tally) uint64 { return c.refused }
+	}
 	sort.Slice(out, func(i, j int) bool {
-		a, b := out[i].hits(), out[j].hits()
+		a, b := weight(out[i]), weight(out[j])
 		return a > b || a == b && bytes.Compare(out[i].key[:], out[j].key[:]) < 0
 	})
 	if len(out) > n {
@@ -318,11 +331,13 @@ type clientCount struct {
 }
 
 // top returns the n busiest addresses of the window, busiest first.
-func (t *clientTracker) top(n int) []clientCount {
+func (t *clientTracker) top(n int) []clientCount { return t.topBy(n, false) }
+
+func (t *clientTracker) topBy(n int, refusedOnly bool) []clientCount {
 	if t == nil {
 		return nil
 	}
-	ranked := t.ranked(n)
+	ranked := t.rankedBy(n, refusedOnly)
 	out := make([]clientCount, len(ranked))
 	for i, c := range ranked {
 		out[i] = clientCount{c.key.addr(), c.accepted, c.refused}
@@ -341,8 +356,13 @@ type ClientStat struct {
 
 // topClients lists the busiest addresses with their countries. Countries are
 // looked up here, for the few rows returned, never per datagram.
-func (t *clientTracker) topClients(n int) []ClientStat {
-	top := t.top(n)
+func (t *clientTracker) topClients(n int) []ClientStat { return t.topStats(n, false) }
+
+// topRefusedClients lists the addresses refused most, whatever else is served.
+func (t *clientTracker) topRefusedClients(n int) []ClientStat { return t.topStats(n, true) }
+
+func (t *clientTracker) topStats(n int, refusedOnly bool) []ClientStat {
+	top := t.topBy(n, refusedOnly)
 	if len(top) == 0 {
 		return nil
 	}

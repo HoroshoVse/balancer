@@ -292,20 +292,27 @@ func addrOf(a net.Addr) (netip.Addr, bool) {
 // refusals are counted again as such.
 func (l *LoadBalancerInstance) admit(addr net.Addr) bool { return l.admitPacket(addr, nil) }
 
-// admitPacket is admit for a datagram: when it is refused and looks like a DNS
-// query, the name it asked for is counted as well.
+// admitPacket is admit for a datagram: when it looks like a DNS query, the name
+// it asked for is counted too, with the address that asked and whether it was
+// served, so "who asks for what" can be told apart from the attack.
 func (l *LoadBalancerInstance) admitPacket(addr net.Addr, payload []byte) bool {
 	a, ok := addrOf(addr)
 	if !ok {
 		return true
 	}
 	p := l.access
-	if p == nil {
-		l.clients.record(a, false)
-		return true
+	d := AccessDecision{Allowed: true}
+	if p != nil {
+		d = p.decide(a)
 	}
-	d := p.decide(a)
 	l.clients.record(a, !d.Allowed)
+	var label [maxQueryLabel]byte
+	n, isQuery := 0, false
+	if payload != nil {
+		if n, isQuery = queryLabel(payload, &label); isQuery {
+			l.domains.recordFrom(label[:n], a, !d.Allowed)
+		}
+	}
 	if d.Allowed {
 		return true
 	}
@@ -323,12 +330,8 @@ func (l *LoadBalancerInstance) admitPacket(addr net.Addr, payload []byte) bool {
 	}
 	Metrics.RecordBlocked(l.Config.ID, where, d.Reason)
 	p.blocks.note(key)
-	if payload != nil {
-		var label [maxQueryLabel]byte
-		if n, ok := queryLabel(payload, &label); ok {
-			l.domains.record(label[:n])
-			p.blocks.noteQuery(label[:n])
-		}
+	if isQuery {
+		p.blocks.noteQuery(label[:n])
 	}
 	return false
 }

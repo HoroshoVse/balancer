@@ -26,7 +26,7 @@ type LBMetrics struct {
 	TotalBlocked   uint64   // connections refused by the access rules
 	blockedBy      sync.Map // country code ("" = none) -> *uint64
 	clients        *clientTracker // who is hitting the balancer, served or refused
-	domains        *domainTracker // what the refused DNS queries asked for
+	domains        *domainTracker // what the DNS queries asked for, and who asked
 
 	mu            sync.RWMutex
 	History       []MetricsSnapshot
@@ -227,7 +227,16 @@ func (m *MetricsRegistry) GetMetricsForLB(lbID uint) map[string]interface{} {
 	if top := lbm.clients.topClients(topClientsShown); len(top) > 0 {
 		out["top_clients"] = top
 	}
+	if top := lbm.clients.topRefusedClients(topRefusedShown); len(top) > 0 {
+		out["top_refused_clients"] = top
+	}
 	return out
+}
+
+// GetQueriesForLB lists the DNS names the balancer was asked for lately, each
+// with the addresses that asked and how many queries were served or refused.
+func (m *MetricsRegistry) GetQueriesForLB(lbID uint) QueryReport {
+	return m.getOrCreate(lbID).domains.report()
 }
 
 func (m *MetricsRegistry) GetMetricsHistoryForLB(lbID uint) []MetricsSnapshot {

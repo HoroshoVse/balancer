@@ -171,10 +171,10 @@ func TestQueryLabelDoesNotAllocate(t *testing.T) {
 	}
 	tr := newDomainTracker()
 	n, _ := queryLabel(p, &out)
-	tr.record(out[:n]) // the first sight of a name keeps a copy of it
+	tr.record(out[:n], true) // the first sight of a name keeps a copy of it
 	if a := testing.AllocsPerRun(1000, func() {
 		n, _ := queryLabel(p, &out)
-		tr.record(out[:n])
+		tr.record(out[:n], true)
 	}); a != 0 {
 		t.Fatalf("%v allocations per refused query of a known name", a)
 	}
@@ -187,21 +187,21 @@ func recordQuery(tr *domainTracker, name string, qtype uint16, times int) {
 		panic("not a query: " + name)
 	}
 	for i := 0; i < times; i++ {
-		tr.record(out[:n])
+		tr.record(out[:n], true)
 	}
 }
 
 func TestDomainTrackerCollapsesRandomSubdomains(t *testing.T) {
 	_, now := newTestTracker(1_000_000)
 	dt := newDomainTracker()
-	dt.clock = now.Load
+	dt.setClock(now.Load)
 
 	rng := rand.New(rand.NewPCG(3, 4))
 	var out [maxQueryLabel]byte
 	for i := 0; i < 50_000; i++ { // a water-torture flood: a fresh subdomain every time
 		name := fmt.Sprintf("%x.%x.heimaoip.com", rng.Uint64(), rng.Uint32())
 		n, _ := queryLabel(dnsPacket(false, name, 16), &out)
-		dt.record(out[:n])
+		dt.record(out[:n], true)
 	}
 	recordQuery(dt, "www.example.co.uk", 1, 300)
 	recordQuery(dt, "example.com", 28, 20)
@@ -235,18 +235,18 @@ func TestDomainTrackerCollapsesRandomSubdomains(t *testing.T) {
 
 func TestDomainTrackerStaysBoundedAndKeepsTheBusiestName(t *testing.T) {
 	dt := newDomainTracker()
-	dt.clock = func() int64 { return 1_000_000 } // one slice, whatever the wall clock says
+	dt.setClock(func() int64 { return 1_000_000 }) // one slice, whatever the wall clock says
 	rng := rand.New(rand.NewPCG(5, 6))
 	var out [maxQueryLabel]byte
 	n, _ := queryLabel(dnsPacket(false, "attack.example", 255), &out)
 	heavy := append([]byte(nil), out[:n]...)
 	for i := 0; i < 200_000; i++ { // every query for a different registrable domain
 		if i%5 == 0 {
-			dt.record(heavy)
+			dt.record(heavy, true)
 		}
 		name := fmt.Sprintf("%x.%x.net", rng.Uint32(), rng.Uint32())
 		n, _ := queryLabel(dnsPacket(false, name, 1), &out)
-		dt.record(out[:n])
+		dt.record(out[:n], true)
 	}
 	got := dt.top(3)
 	if len(got) == 0 || got[0].Domain != "attack.example" || got[0].Type != "ANY" || got[0].Count < 39_000 || got[0].Count > 40_000 {
@@ -415,6 +415,6 @@ func BenchmarkDomainTrackerRandomSubdomains(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		n, _ := queryLabel(p, &out)
-		dt.record(out[:n])
+		dt.record(out[:n], true)
 	}
 }

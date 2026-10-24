@@ -3,7 +3,10 @@ package engine
 import (
 	"encoding/binary"
 	"hash/maphash"
+	"net/netip"
+	"sort"
 	"strconv"
+	"time"
 )
 
 // What did the refused queries ask for? A flood against a DNS balancer is
@@ -136,27 +139,58 @@ func appendQType(dst []byte, t uint16) []byte {
 	return strconv.AppendUint(append(dst, "TYPE"...), uint64(t), 10)
 }
 
-// domainTracker counts the refused queries by domain and type over the same
-// window as the client table. Its keys are hashes of the "domain\x00TYPE" text
-// (with a seed of this process, so nobody can aim at a collision); the text
-// itself is kept for the entries in the table.
+// domainTracker counts the DNS queries by domain and type over the same window
+// as the client table, and keeps who asked for each name. Its keys are hashes
+// of the "domain\x00TYPE" text (with a seed of this process, so nobody can aim at
+// a collision); the text itself is kept for the entries in the table.
+//
+// names is one row per name: how many queries were served and how many refused.
+// pairs is one row per (name, client address), so a name can be listed with the
+// addresses that asked for it. Both tables are the fixed-size space-saving kind,
+// so the pairs of a name hit by a flood from countless addresses are a lower
+// bound: names says what is left over.
 type domainTracker struct {
-	tracker
-	seed maphash.Seed
+	tracker // names
+	pairs   tracker
+	seed    maphash.Seed
 }
 
 func newDomainTracker() *domainTracker {
-	return &domainTracker{tracker{clock: coarseUnix}, maphash.MakeSeed()}
+	return &domainTracker{tracker: tracker{clock: coarseUnix}, pairs: tracker{clock: coarseUnix}, seed: maphash.MakeSeed()}
 }
 
-// record counts one refused query; label is what queryLabel produced.
-func (t *domainTracker) record(label []byte) {
+// setClock moves both tables to the same clock (tests).
+func (t *domainTracker) setClock(clock func() int64) { t.clock, t.pairs.clock = clock, clock }
+
+func (t *domainTracker) nameKey(label []byte) ipKey {
+	var k ipKey
+	binary.LittleEndian.PutUint64(k[:8], maphash.Bytes(t.seed, label))
+	return k
+}
+
+// record counts one query for the name label (what queryLabel produced);
+// refused says whether the balancer turned it away.
+func (t *domainTracker) record(label []byte, refused bool) {
 	if t == nil {
 		return
 	}
-	var k ipKey
-	binary.LittleEndian.PutUint64(k[:8], maphash.Bytes(t.seed, label))
-	t.add(k, true, label)
+	t.add(t.nameKey(label), refused, label)
+}
+
+// recordFrom is record that also remembers which address asked.
+func (t *domainTracker) recordFrom(label []byte, from netip.Addr, refused bool) {
+	if t == nil {
+		return
+	}
+	t.record(label, refused)
+	ip := ipKey(from.As16())
+	k := t.nameKey(label)
+	binary.LittleEndian.PutUint64(k[8:], maphash.Bytes(t.seed, ip[:]))
+	// The key is a hash of both; what it stands for is kept as the address then the name
+	var both [len(ip) + maxQueryLabel]byte
+	copy(both[:], ip[:])
+	n := len(ip) + copy(both[len(ip):], label)
+	t.pairs.add(k, refused, both[:n])
 }
 
 // BlockedDomain is one row of "what the refused queries asked for".
@@ -176,16 +210,132 @@ func splitLabel(label string) (domain, qtype string) {
 	return label, ""
 }
 
-// top lists the n most asked-for names of the window.
+// top lists the n names refused most in the window.
 func (t *domainTracker) top(n int) []BlockedDomain {
 	if t == nil {
 		return nil
 	}
-	ranked := t.ranked(n)
+	ranked := t.rankedBy(n, true)
 	out := make([]BlockedDomain, len(ranked))
 	for i, c := range ranked {
 		out[i].Domain, out[i].Type = splitLabel(c.label)
-		out[i].Count = c.hits()
+		out[i].Count = c.refused
 	}
 	return out
+}
+
+const (
+	// queryDomainsShown names are reported for each of "served most" and "refused
+	// most": a flood must not push the served names out of the list, nor the
+	// other way round.
+	queryDomainsShown = 20
+	// queryClientsShown addresses are listed under a name.
+	queryClientsShown = 8
+	allKeys           = clientShards * clientShardCap * clientSlices
+)
+
+// QueryClient is one address that asked for a name.
+type QueryClient struct {
+	IP       string `json:"ip"`
+	Country  string `json:"country"`            // "" when unknown or the database is not loaded
+	Internal bool   `json:"internal,omitempty"` // a private, loopback or link-local address
+	Accepted uint64 `json:"accepted"`
+	Refused  uint64 `json:"refused"`
+}
+
+// QueryDomain is one name with how its queries fared and who asked.
+type QueryDomain struct {
+	Domain   string        `json:"domain"`
+	Type     string        `json:"type"`
+	Accepted uint64        `json:"accepted"`
+	Refused  uint64        `json:"refused"`
+	Clients  []QueryClient `json:"clients"`
+	// OtherAccepted and OtherRefused are the queries of addresses that are not
+	// listed: too many of them, or too quiet to stay in the table.
+	OtherAccepted uint64 `json:"other_accepted,omitempty"`
+	OtherRefused  uint64 `json:"other_refused,omitempty"`
+}
+
+// QueryReport is what the "who asked for what" window shows.
+type QueryReport struct {
+	WindowSeconds int           `json:"window_seconds"`
+	Domains       []QueryDomain `json:"domains"`
+}
+
+// report lists the names asked for in the window, each with its asking addresses.
+func (t *domainTracker) report() QueryReport {
+	rep := QueryReport{WindowSeconds: int(ClientWindow / time.Second), Domains: []QueryDomain{}}
+	if t == nil {
+		return rep
+	}
+	names := t.ranked(allKeys)
+	if len(names) == 0 {
+		return rep
+	}
+	pick := map[string]tally{}
+	for _, by := range []func(tally) uint64{func(c tally) uint64 { return c.accepted }, func(c tally) uint64 { return c.refused }} {
+		sort.Slice(names, func(i, j int) bool {
+			a, b := by(names[i]), by(names[j])
+			return a > b || a == b && names[i].label < names[j].label
+		})
+		for i := 0; i < len(names) && i < queryDomainsShown && by(names[i]) > 0; i++ {
+			pick[names[i].label] = names[i]
+		}
+	}
+
+	byName := map[string][]tally{}
+	for _, c := range t.pairs.ranked(allKeys) {
+		if len(c.label) <= len(ipKey{}) {
+			continue
+		}
+		name := c.label[len(ipKey{}):]
+		if _, ok := pick[name]; ok {
+			byName[name] = append(byName[name], c)
+		}
+	}
+
+	for name, c := range pick {
+		d := QueryDomain{Accepted: c.accepted, Refused: c.refused}
+		d.Domain, d.Type = splitLabel(name)
+		pairs := byName[name]
+		sort.Slice(pairs, func(i, j int) bool {
+			a, b := pairs[i].hits(), pairs[j].hits()
+			return a > b || a == b && pairs[i].label < pairs[j].label
+		})
+		var listedAccepted, listedRefused uint64
+		for i, pc := range pairs {
+			if i == queryClientsShown {
+				break
+			}
+			addr := ipKey([]byte(pc.label)[:len(ipKey{})]).addr()
+			qc := QueryClient{IP: addr.String(), Accepted: pc.accepted, Refused: pc.refused, Internal: isInternal(addr)}
+			if GeoIP != nil && !qc.Internal {
+				if cc, loaded := GeoIP.Country(addr); loaded {
+					qc.Country = cc
+				}
+			}
+			d.Clients = append(d.Clients, qc)
+			listedAccepted += pc.accepted
+			listedRefused += pc.refused
+		}
+		if d.Accepted > listedAccepted {
+			d.OtherAccepted = d.Accepted - listedAccepted
+		}
+		if d.Refused > listedRefused {
+			d.OtherRefused = d.Refused - listedRefused
+		}
+		if d.Clients == nil {
+			d.Clients = []QueryClient{}
+		}
+		rep.Domains = append(rep.Domains, d)
+	}
+	sort.Slice(rep.Domains, func(i, j int) bool {
+		a, b := rep.Domains[i], rep.Domains[j]
+		ha, hb := a.Accepted+a.Refused, b.Accepted+b.Refused
+		if ha != hb {
+			return ha > hb
+		}
+		return a.Domain+"\x00"+a.Type < b.Domain+"\x00"+b.Type
+	})
+	return rep
 }

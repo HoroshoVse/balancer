@@ -77,6 +77,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/geo/settings", s.authed(models.RoleAdmin, s.updateGeoSettings))
 	mux.HandleFunc("/api/v1/geo/lookup", s.authed(models.RoleViewer, s.lookupGeo))
 	mux.HandleFunc("/api/v1/load-balancers/history", s.authed(models.RoleViewer, s.getLBMetricsHistory)) // Expected query param ?id=X
+	mux.HandleFunc("/api/v1/load-balancers/queries", s.authed(models.RoleViewer, s.getLBQueries)) // ?id=X
 	mux.HandleFunc("/api/v1/metrics/history", s.authed(models.RoleViewer, s.getGlobalMetricsHistory))
 	mux.HandleFunc("/api/v1/metrics/host", s.authed(models.RoleViewer, s.getHostMetrics))
 	mux.HandleFunc("/api/v1/logs", s.authed(models.RoleViewer, s.getLogs))
@@ -557,6 +558,17 @@ func (s *Server) getLBMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, engine.Metrics.GetMetricsHistoryForLB(uint(id)))
+}
+
+// getLBQueries tells which DNS names a balancer was asked for lately, who asked
+// and whether it was let through.
+func (s *Server) getLBQueries(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseUint(r.URL.Query().Get("id"), 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, engine.Metrics.GetQueriesForLB(uint(id)))
 }
 
 func (s *Server) getGlobalMetricsHistory(w http.ResponseWriter, r *http.Request) {

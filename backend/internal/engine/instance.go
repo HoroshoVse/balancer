@@ -88,7 +88,7 @@ type LoadBalancerInstance struct {
 
 	access  *accessPolicy // who may connect; nil when everyone may
 	clients *clientTracker // every client counted, shared with the balancer's metrics so it outlives a restart
-	domains *domainTracker // names asked for by refused DNS queries, likewise
+	domains *domainTracker // names asked for by DNS queries, and by whom, likewise
 
 	ejected   sync.Map // backend ID -> unix nanos until which new connections avoid it (see dial.go)
 	dialFails sync.Map // backend ID -> *failTracker
