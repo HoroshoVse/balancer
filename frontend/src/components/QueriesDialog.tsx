@@ -34,17 +34,24 @@ function Split({ accepted, refused }: { accepted: number; refused: number }) {
 }
 
 function DomainRow({
-  d, lb, open, onToggle, onBlock,
+  d, lb, view, open, onToggle, onBlock,
 }: {
   d: QueryDomain
   lb: LoadBalancer
+  view: Filter
   open: boolean
   onToggle: () => void
   onBlock: (c: ClientStat) => void
 }) {
   const editable = canEdit()
-  const otherAccepted = d.other_accepted ?? 0
-  const otherRefused = d.other_refused ?? 0
+  // The window is filtered by outcome: under "Проходят" only the addresses that were let through are listed
+  const otherAccepted = view === "refused" ? 0 : (d.other_accepted ?? 0)
+  const otherRefused = view === "passed" ? 0 : (d.other_refused ?? 0)
+  const clients = d.clients
+    .filter((c) => (view === "passed" ? c.accepted > 0 : view === "refused" ? c.refused > 0 : true))
+    .sort((a, b) =>
+      view === "passed" ? b.accepted - a.accepted : view === "refused" ? b.refused - a.refused : b.accepted + b.refused - (a.accepted + a.refused),
+    )
   return (
     <li className="rounded-xl border border-line-soft">
       <button
@@ -71,7 +78,7 @@ function DomainRow({
       {open && (
         <div className="border-t border-line-soft">
           <ul>
-            {d.clients.map((c) => {
+            {clients.map((c) => {
               const denied = listCovers(lb.access_deny, c.ip)
               return (
                 <li key={c.ip} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-t border-ground px-4 py-2.5 first:border-t-0">
@@ -81,7 +88,21 @@ function DomainRow({
                   </span>
                   <span className="justify-self-end"><Verdict accepted={c.accepted} refused={c.refused} /></span>
                   <span className="font-mono text-xs text-ink-2">
-                    прошло {formatNumber(c.accepted)} · <span className={c.refused > 0 ? "text-down-text" : ""}>отклонено {formatNumber(c.refused)}</span>
+                    {view === "refused" ? (
+                      <>
+                        <span className="text-down-text">отклонено {formatNumber(c.refused)}</span>
+                        {c.accepted > 0 && <span className="text-ink-3"> · ещё прошло {formatNumber(c.accepted)}</span>}
+                      </>
+                    ) : view === "passed" ? (
+                      <>
+                        прошло {formatNumber(c.accepted)}
+                        {c.refused > 0 && <span className="text-ink-3"> · ещё отклонено {formatNumber(c.refused)}</span>}
+                      </>
+                    ) : (
+                      <>
+                        прошло {formatNumber(c.accepted)} · <span className={c.refused > 0 ? "text-down-text" : ""}>отклонено {formatNumber(c.refused)}</span>
+                      </>
+                    )}
                   </span>
                   <span className="justify-self-end">
                     {denied ? (
@@ -102,11 +123,21 @@ function DomainRow({
                 </li>
               )
             })}
-            {d.clients.length === 0 && <li className="px-4 py-3 text-sm text-ink-3">Адреса не успели записаться.</li>}
+            {clients.length === 0 && (
+              <li className="px-4 py-3 text-sm text-ink-3">
+                {d.clients.length === 0
+                  ? "Адреса не успели записаться."
+                  : view === "passed"
+                    ? "Из перечисленных адресов ни один не прошёл."
+                    : "Из перечисленных адресов никого не отклонили."}
+              </li>
+            )}
           </ul>
           {otherAccepted + otherRefused > 0 && (
             <p className="border-t border-ground px-4 py-2.5 text-xs text-ink-3">
-              И ещё запросы других адресов: прошло {formatNumber(otherAccepted)}, отклонено {formatNumber(otherRefused)}. Их слишком много или они слишком редкие, чтобы перечислять.
+              И ещё запросы других адресов:{" "}
+              {[otherAccepted > 0 && `прошло ${formatNumber(otherAccepted)}`, otherRefused > 0 && `отклонено ${formatNumber(otherRefused)}`].filter(Boolean).join(", ")}
+              . Их слишком много или они слишком редкие, чтобы перечислять.
             </p>
           )}
         </div>
@@ -188,6 +219,7 @@ export function QueriesDialog({
                   key={key(d)}
                   d={d}
                   lb={lb}
+                  view={filter}
                   open={isOpen(d, i)}
                   onToggle={() => setExpanded((e) => ({ ...e, [key(d)]: !isOpen(d, i) }))}
                   onBlock={setTarget}

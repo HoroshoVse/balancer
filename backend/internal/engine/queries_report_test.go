@@ -90,8 +90,8 @@ func TestQueryReportCountsAddressesItCannotListAsOthers(t *testing.T) {
 	if d.Refused != sources {
 		t.Fatalf("refused = %d, want %d", d.Refused, sources)
 	}
-	if len(d.Clients) > queryClientsShown {
-		t.Fatalf("%d clients listed, at most %d", len(d.Clients), queryClientsShown)
+	if len(d.Clients) > 2*queryClientsShown {
+		t.Fatalf("%d clients listed, at most %d", len(d.Clients), 2*queryClientsShown)
 	}
 	var listed uint64
 	for _, c := range d.Clients {
@@ -158,5 +158,29 @@ func TestRecordFromDoesNotAllocateOnceKnown(t *testing.T) {
 	dt.recordFrom(out[:n], a, true) // the first sight keeps a copy of the name
 	if got := testing.AllocsPerRun(1000, func() { dt.recordFrom(out[:n], a, true) }); got != 0 {
 		t.Fatalf("%v allocations per query", got)
+	}
+}
+
+// A few addresses that slip through are listed even when many more are refused
+// and each of those has been refused more often.
+func TestQueryReportListsTheAddressesThatSlippedThrough(t *testing.T) {
+	dt := newDomainTracker()
+	dt.setClock(func() int64 { return 1_000_000 })
+	for i := 0; i < 30; i++ {
+		recordFrom(dt, "attack.example", 16, netip.AddrFrom4([4]byte{45, 9, 0, byte(i + 1)}).String(), true, 50)
+	}
+	recordFrom(dt, "attack.example", 16, "203.0.113.9", false, 3)
+	d := findQuery(dt.report(), "attack.example", "TXT")
+	if d == nil {
+		t.Fatal("attack.example missing")
+	}
+	var leaked bool
+	for _, c := range d.Clients {
+		if c.IP == "203.0.113.9" && c.Accepted == 3 {
+			leaked = true
+		}
+	}
+	if !leaked {
+		t.Fatalf("the address that was let through is not listed among %d clients", len(d.Clients))
 	}
 }

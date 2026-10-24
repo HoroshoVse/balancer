@@ -229,7 +229,8 @@ const (
 	// most": a flood must not push the served names out of the list, nor the
 	// other way round.
 	queryDomainsShown = 20
-	// queryClientsShown addresses are listed under a name.
+	// queryClientsShown addresses are listed under a name for each of "served
+	// most" and "refused most".
 	queryClientsShown = 8
 	allKeys           = clientShards * clientShardCap * clientSlices
 )
@@ -297,15 +298,28 @@ func (t *domainTracker) report() QueryReport {
 	for name, c := range pick {
 		d := QueryDomain{Accepted: c.accepted, Refused: c.refused}
 		d.Domain, d.Type = splitLabel(name)
+		// The busiest askers of each kind are listed: a few addresses that slip
+		// through must not be hidden behind the many that are refused, nor the
+		// other way round.
 		pairs := byName[name]
+		listed := map[string]bool{}
+		for _, by := range []func(tally) uint64{func(c tally) uint64 { return c.accepted }, func(c tally) uint64 { return c.refused }} {
+			sort.Slice(pairs, func(i, j int) bool {
+				a, b := by(pairs[i]), by(pairs[j])
+				return a > b || a == b && pairs[i].label < pairs[j].label
+			})
+			for i := 0; i < len(pairs) && i < queryClientsShown && by(pairs[i]) > 0; i++ {
+				listed[pairs[i].label] = true
+			}
+		}
 		sort.Slice(pairs, func(i, j int) bool {
 			a, b := pairs[i].hits(), pairs[j].hits()
 			return a > b || a == b && pairs[i].label < pairs[j].label
 		})
 		var listedAccepted, listedRefused uint64
-		for i, pc := range pairs {
-			if i == queryClientsShown {
-				break
+		for _, pc := range pairs {
+			if !listed[pc.label] {
+				continue
 			}
 			addr := ipKey([]byte(pc.label)[:len(ipKey{})]).addr()
 			qc := QueryClient{IP: addr.String(), Accepted: pc.accepted, Refused: pc.refused, Internal: isInternal(addr)}
