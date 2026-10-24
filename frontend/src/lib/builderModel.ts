@@ -1,5 +1,6 @@
 // Builder form model: defaults, conversions to/from the API, and pre-flight checks.
 import type { BackendNode, LoadBalancer } from "@/types"
+import { countryList, splitCodes } from "./countries"
 import { findConflict, kindOf, listenAddr, plural, type Kind } from "./lbModel"
 import { blankNode, type Check, type Recipe } from "./recipes"
 
@@ -34,6 +35,10 @@ export interface BuilderForm {
   connect_timeout: number
   idle_timeout: number
   response_timeout: number
+  access_mode: "" | "allow" | "deny"
+  access_countries: string[]
+  access_allow: string
+  access_deny: string
   nodes: NodeForm[]
 }
 
@@ -91,6 +96,10 @@ export function fromRecipe(r: Recipe): BuilderForm {
     sticky_sessions_enabled: false,
     sticky_session_type: "ip",
     ...defaultTimeouts(r.kind),
+    access_mode: "",
+    access_countries: [],
+    access_allow: "",
+    access_deny: "",
     nodes: applyCheck(r.nodes.map(withKey), r.check, "10"),
   }
 }
@@ -127,6 +136,10 @@ export function fromLB(lb: LoadBalancer): BuilderForm {
     connect_timeout: lb.connect_timeout ?? 0,
     idle_timeout: lb.idle_timeout ?? 0,
     response_timeout: lb.response_timeout ?? 0,
+    access_mode: lb.access_mode === "allow" || lb.access_mode === "deny" ? lb.access_mode : "",
+    access_countries: splitCodes(lb.access_countries),
+    access_allow: lb.access_allow ?? "",
+    access_deny: lb.access_deny ?? "",
     nodes: nodes.length ? nodes : [withKey(blankNode({ port: lb.listen_port }))],
   }
 }
@@ -192,6 +205,10 @@ export function toPayload(f: BuilderForm, id?: number): Record<string, unknown> 
     connect_timeout: f.connect_timeout,
     idle_timeout: f.idle_timeout,
     response_timeout: f.response_timeout,
+    access_mode: f.access_mode,
+    access_countries: f.access_countries.join(","),
+    access_allow: f.access_allow.trim(),
+    access_deny: f.access_deny.trim(),
     backend_group: {
       name: `${name} Group`,
       backends: applyCheck(f.nodes, f.check, f.interval).map(({ key: _key, status: _status, metrics: _metrics, ...b }) => ({
@@ -217,7 +234,7 @@ export interface Preflight {
 
 const isWildcard = (ip: string) => ip === "" || ip === "0.0.0.0" || ip === "::"
 
-export function preflight(f: BuilderForm, lbs: LoadBalancer[], editingId?: number): Preflight[] {
+export function preflight(f: BuilderForm, lbs: LoadBalancer[], editingId?: number, geoLoaded = true): Preflight[] {
   const out: Preflight[] = []
   const proto = protoFields(f.kind)
   const ssl = proto.ssl_enabled
@@ -293,6 +310,18 @@ export function preflight(f: BuilderForm, lbs: LoadBalancer[], editingId?: numbe
   if (f.proxy_protocol_enabled && (f.kind === "dns" || f.check === "dns")) {
     out.push({ level: "warn", text: "AdGuard Home не понимает PROXY protocol — для его узлов выключите.", fix: { label: "Выключить PROXY", apply: (x) => ({ ...x, proxy_protocol_enabled: false }) } })
   }
+
+  if (f.access_mode === "allow" && f.access_countries.length === 0 && !f.access_allow.trim()) {
+    out.push({ level: "error", text: "Выбран доступ только из выбранных стран, но ни одной страны нет — не подключится никто.", fix: { label: "Выбрать страны", open: "access" } })
+  } else if (f.access_mode !== "" && f.access_countries.length === 0 && !f.access_allow.trim() && !f.access_deny.trim()) {
+    out.push({ level: "warn", text: "Режим доступа выбран, но страны не указаны — ограничение ничего не изменит.", fix: { label: "Выбрать страны", open: "access" } })
+  } else if (f.access_mode !== "" && !geoLoaded) {
+    out.push({ level: "warn", text: "База стран ещё не загружена — пока она качается, фильтр по странам пропускает всех.", fix: { label: "Открыть базы", open: "access" } })
+  } else if (f.access_mode === "allow") {
+    out.push({ level: "ok", text: `Подключаться смогут только из: ${countryList(f.access_countries)}${f.access_allow.trim() ? " и с разрешённых адресов" : ""}.` })
+  } else if (f.access_mode === "deny" && f.access_countries.length > 0) {
+    out.push({ level: "ok", text: `Из этих стран подключиться нельзя: ${countryList(f.access_countries)}.` })
+  }
   return out
 }
 
@@ -325,6 +354,8 @@ export function describe(f: BuilderForm): string {
   else if (backups.length > 1) s += ` Если основные не ответят, подхватят ${backups.join(", ")} вместе.`
   if (hasTLS(f.kind) && f.acme_enabled && f.acme_domains.trim()) s += ` Сертификат для ${f.acme_domains.trim()} выпустит Let's Encrypt.`
   if (hasTLS(f.kind) && f.http_redirect) s += " Запросы на 80-й порт переадресуются на HTTPS."
+  if (f.access_mode === "allow" && f.access_countries.length) s += ` Принимает только из: ${countryList(f.access_countries)}; остальным не отвечает.`
+  else if (f.access_mode === "deny" && f.access_countries.length) s += ` Не принимает из: ${countryList(f.access_countries)}.`
   return s
 }
 

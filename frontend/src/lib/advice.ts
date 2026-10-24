@@ -67,6 +67,17 @@ export function adviceFor(lb: LoadBalancer): Advice[] {
     out.push({ id: "self-signed", tone: "warn", title: "Сертификат самоподписанный", text: "Браузеры и DoH-клиенты будут ругаться. Включите Let's Encrypt или загрузите свой.", edit: "tls" })
   }
 
+  // A private listen address proves nothing: hosters often map a public IP onto it
+  if ((kind === "dns" || (kind === "udp" && lb.listen_port === 53)) && !lb.access_mode && !lb.access_deny?.trim()) {
+    out.push({
+      id: "open-dns",
+      tone: "info",
+      title: "Любой адрес в мире может слать запросы",
+      text: "Открытый DNS-сервер используют для атак и перебора случайных имён. Если им пользуются из одной страны, оставьте только её.",
+      edit: "access",
+    })
+  }
+
   if (enabled.length === 1) {
     out.push({ id: "single-node", tone: "info", title: "Всего один узел", text: "Если он откажет, запросы будет некуда отправить. Добавьте ещё один, хотя бы в резерв.", edit: "nodes" })
   }

@@ -3,6 +3,9 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
 import { Check as CheckIcon, ChevronDown, ChevronUp, Plus, TriangleAlert, X } from "lucide-react"
 import { api, canEdit, errorMessage } from "@/lib/api"
+import { countryList, countryName } from "@/lib/countries"
+import { usePoll } from "@/lib/usePoll"
+import { CountryPicker } from "@/components/CountryPicker"
 import {
   applyCheck,
   changeKind,
@@ -26,7 +29,7 @@ import { blankNode, recipeList, type Check } from "@/lib/recipes"
 import { cn } from "@/lib/utils"
 import { across, shareWidth, useMeasured, type FlowPath } from "@/lib/flow"
 import { FlowPaths } from "@/components/Flow"
-import type { BackendNode } from "@/types"
+import type { BackendNode, GeoLookup, GeoStatus } from "@/types"
 
 const pill =
   "rounded-t-[10px] border-0 border-b-2 border-dashed border-cobalt bg-cobalt-soft px-2.5 py-0.5 font-medium text-ink outline-none focus:border-solid focus:bg-[#DCE2FF]"
@@ -293,6 +296,98 @@ const levelStyle: Record<Preflight["level"], { box: string; dot: string; mark: R
   error: { box: "bg-down-soft text-down-text", dot: "bg-down", mark: <X className="h-3.5 w-3.5" aria-hidden="true" />, sr: "Ошибка" },
 }
 
+const accessModes: { value: BuilderForm["access_mode"]; label: string; hint: string }[] = [
+  { value: "", label: "Всем", hint: "без ограничений" },
+  { value: "allow", label: "Только из выбранных стран", hint: "остальным не отвечаем" },
+  { value: "deny", label: "Из всех стран, кроме выбранных", hint: "выбранным не отвечаем" },
+]
+
+/** "Кому можно подключаться": by country, plus addresses that are always let in or always refused. */
+function AccessPanel({ form, set, geo, balancerId }: { form: BuilderForm; set: <K extends keyof BuilderForm>(k: K, v: BuilderForm[K]) => void; geo: GeoStatus | null; balancerId?: number }) {
+  const [ip, setIp] = useState("")
+  const [answer, setAnswer] = useState<{ text: string; ok: boolean } | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const check = async () => {
+    setBusy(true)
+    setAnswer(null)
+    try {
+      const r = await api<GeoLookup>(`/geo/lookup?ip=${encodeURIComponent(ip.trim())}${balancerId ? `&lb=${balancerId}` : ""}`)
+      const where = r.internal ? "внутренний адрес" : !r.loaded ? "страна неизвестна: база не загружена" : r.country ? `${countryName(r.country)} (${r.country})` : "ни один реестр не знает этот адрес"
+      const d = r.decision
+      const verdict = !d ? "" : d.allowed ? " — будет принят" : " — будет отклонён"
+      setAnswer({ text: `${r.ip}: ${where}${verdict}`, ok: !d || d.allowed })
+    } catch (err) {
+      setAnswer({ text: errorMessage(err), ok: false })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex w-full flex-col gap-5">
+      <fieldset className="flex flex-col gap-2">
+        <legend className="mb-1 text-[13px] text-ink-2">Принимать подключения</legend>
+        {accessModes.map((m) => (
+          <label key={m.value} className={cn("flex cursor-pointer items-start gap-3 rounded-[10px] border px-3.5 py-2.5", form.access_mode === m.value ? "border-cobalt bg-cobalt-soft/50" : "border-line bg-white hover:border-cobalt")}>
+            <input type="radio" name="access-mode" checked={form.access_mode === m.value} onChange={() => set("access_mode", m.value)} className="mt-1 h-4 w-4 accent-cobalt" />
+            <span className="flex flex-col">
+              <span className="text-[15px] font-medium text-ink">{m.label}</span>
+              <span className="text-[13px] text-ink-3">{m.hint}</span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+
+      {form.access_mode !== "" && (
+        <>
+          <CountryPicker
+            value={form.access_countries}
+            onChange={(v) => set("access_countries", v)}
+            available={geo?.country_codes ?? []}
+            presets={form.access_mode === "allow" ? [{ label: "Только Россия", codes: ["RU"] }] : []}
+          />
+          <p className="text-[13px] leading-snug text-ink-3">
+            {geo?.loaded
+              ? `Страна — по данным региональных регистраторов (RIPE, ARIN, APNIC, LACNIC, AFRINIC), обновлено ${geo.updated_at ? new Date(geo.updated_at).toLocaleDateString("ru-RU") : "—"}. Это страна, где зарегистрирована сеть, а не обязательно где стоит сервер.`
+              : geo?.updating
+                ? "База стран сейчас скачивается: при первой загрузке это занимает несколько минут. Пока её нет, фильтр по странам пропускает всех."
+                : "База стран ещё не загружена. Она скачается сама после сохранения (несколько минут), пока фильтр по странам пропускает всех."}
+          </p>
+        </>
+      )}
+
+      <div className="flex w-full flex-wrap gap-4">
+        <label className="flex min-w-[240px] flex-1 flex-col gap-1.5 text-[13px] text-ink-2">
+          Всегда пускать (IP и подсети)
+          <textarea value={form.access_allow} onChange={(e) => set("access_allow", e.target.value)} placeholder={"203.0.113.7\n198.51.100.0/24"} className="min-h-[88px] rounded-lg border border-line p-3 font-mono text-xs outline-none focus:border-cobalt" />
+          <span className="text-xs text-ink-3">Главнее стран. По одному в строке. Внутренние адреса (10.x, 192.168.x, 127.x) пускаются всегда.</span>
+        </label>
+        <label className="flex min-w-[240px] flex-1 flex-col gap-1.5 text-[13px] text-ink-2">
+          Всегда блокировать (IP и подсети)
+          <textarea value={form.access_deny} onChange={(e) => set("access_deny", e.target.value)} placeholder={"103.54.46.15\n91.204.224.0/22"} className="min-h-[88px] rounded-lg border border-line p-3 font-mono text-xs outline-none focus:border-cobalt" />
+          <span className="text-xs text-ink-3">Работает и без выбора стран, например против одной сети-источника атаки.</span>
+        </label>
+      </div>
+
+      <div className="flex w-full flex-col gap-2">
+        <span className="text-[13px] text-ink-2">Проверить адрес{balancerId ? " по сохранённым правилам этого балансировщика" : ""}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <input value={ip} onChange={(e) => setIp(e.target.value)} onKeyDown={(e) => e.key === "Enter" && ip.trim() && !busy && check()} placeholder="103.54.46.15" inputMode="decimal" className={`${smallField} max-w-[220px] font-mono`} aria-label="IP-адрес для проверки" />
+          <button type="button" onClick={check} disabled={busy || !ip.trim()} className="h-10 rounded-lg border border-line bg-white px-4 text-sm font-medium text-ink hover:border-cobalt disabled:opacity-60">
+            {busy ? "Смотрю…" : "Проверить"}
+          </button>
+          {answer && (
+            <span role="status" className={cn("text-sm", answer.ok ? "text-ink-2" : "text-down-text")}>
+              {answer.text}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Builder() {
   const { id } = useParams()
   const editingId = id ? Number(id) : undefined
@@ -304,9 +399,10 @@ export default function Builder() {
   const [recipe, setRecipe] = useState(initialRecipe.key)
   const [form, setForm] = useState<BuilderForm | null>(editingId ? null : fromRecipe(initialRecipe))
   const [openNode, setOpenNode] = useState<string | null>(null)
-  const [openSection, setOpenSection] = useState<string | null>(null)
+  const [openSection, setOpenSection] = useState<string | null>(search.get("open"))
   const [saving, setSaving] = useState(false)
   const [serverError, setServerError] = useState("")
+  const geo = usePoll(() => api<GeoStatus | null>("/geo").catch(() => null), null as GeoStatus | null, "geo", 10000)
 
   const editing = editingId ? lbs.find((lb) => lb.id === editingId) : undefined
   // Seed the form once the balancer being edited has loaded
@@ -360,7 +456,16 @@ export default function Builder() {
   }
   const toggleSection = (sid: string) => setOpenSection((cur) => (cur === sid ? null : sid))
 
-  const checks = preflight(form, lbs, editingId)
+  const accessSummary =
+    form.access_mode === "allow"
+      ? `только ${form.access_countries.length ? countryList(form.access_countries, 2) : "…"}`
+      : form.access_mode === "deny"
+        ? `кроме ${form.access_countries.length ? countryList(form.access_countries, 2) : "…"}`
+        : form.access_deny.trim() || form.access_allow.trim()
+          ? "свои списки"
+          : "всем"
+
+  const checks = preflight(form, lbs, editingId, geo?.loaded ?? false)
   const queue = backupQueue(form.nodes)
   const errors = checks.filter((c) => c.level === "error").length
   const tls = hasTLS(form.kind)
@@ -558,6 +663,15 @@ export default function Builder() {
                 </p>
               </div>
             )}
+          </section>
+
+          <section aria-labelledby="step-access" className="flex flex-col gap-2.5">
+            <h2 id="step-access" className="text-[15px] font-semibold text-ink-2">
+              Кому можно подключаться <span className="font-normal text-ink-3">— по умолчанию всем</span>
+            </h2>
+            <Accordion id="access" title="Доступ по странам и адресам" summary={accessSummary} open={openSection === "access"} onToggle={toggleSection}>
+              <AccessPanel form={form} set={set} geo={geo} balancerId={editingId} />
+            </Accordion>
           </section>
 
           <section aria-labelledby="step-tuning" className="flex flex-col gap-2.5">

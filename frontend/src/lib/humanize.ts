@@ -31,6 +31,19 @@ const rules: Rule[] = [
   { re: /no certificate configured, using a self-signed one$/, kind: "warn", text: () => "Сертификат не задан — используется самоподписанный" },
   { re: /^API Server listening on (.+)$/, kind: "info", text: (m) => `API слушает ${m[1]}` },
   { re: /^Starting Engine/, kind: "info", text: () => "Балансировщик запускается" },
+  {
+    re: /^.+?: (\d+) connections refused by the access rules in the last .+?; most from: (.+)$/,
+    kind: "warn",
+    notable: true,
+    text: (m) => `Фильтр доступа отсёк ${m[1]} подключений за минуту. Чаще всего: ${m[2].replace("deny list", "список запрещённых").replace("unknown country", "страна не определена")}`,
+  },
+  { re: /^.+?: the country database is not loaded, so the country filter is letting everyone in/, kind: "warn", notable: true, text: () => "База стран не загружена — фильтр по странам пока пропускает всех. Загрузите её в Настройках" },
+  { re: /^Geo database: (.+?) updated \((\d+) IPv4 and (\d+) IPv6 ranges\)$/, kind: "info", text: (m) => `База стран: данные ${m[1]} обновлены` },
+  { re: /^Geo database: (.+?) was not updated: (.+)$/, kind: "warn", notable: true, text: (m) => `База стран: ${m[1]} не обновлена — ${m[2]}` },
+  { re: /^Geo database update failed, next try in an hour: (.+)$/, kind: "warn", text: () => "База стран не обновилась, повторю через час" },
+  { re: /^(\d+) failed connections to backend (.+?) since the last message; latest: (.+)$/, kind: "warn", text: (m) => `${m[1]} неудачных подключений к узлу ${m[2]}` },
+  { re: /^Backend (.+?) accepts connections again$/, kind: "ok", text: (m) => `Узел ${m[1]} снова принимает подключения` },
+  { re: /^.+?: (\d+) failed TLS handshakes in the last .+?; most common: (.+)$/, kind: "warn", text: (m) => `${m[1]} неудачных TLS-рукопожатий за минуту. Чаще всего: ${m[2]}` },
   { re: /^Telegram alert (?:failed|rejected)/, kind: "warn", notable: true, text: () => "Не удалось отправить уведомление в Telegram" },
 ]
 

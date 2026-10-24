@@ -5,6 +5,7 @@ import { ApiError, api, errorMessage, isAdmin, setToken, tokenClaims } from "@/l
 import { plural, roleLabel } from "@/lib/lbModel"
 import { usePoll } from "@/lib/usePoll"
 import { Switch } from "@/components/Switch"
+import { GeoDatabase } from "@/components/GeoDatabase"
 
 interface TelegramDelivery {
   at: string
@@ -55,6 +56,7 @@ interface SystemInfo {
 const sections = [
   { id: "notify", label: "Уведомления", admin: true },
   { id: "access", label: "Доступ", admin: false },
+  { id: "geo", label: "Базы стран", admin: true },
   { id: "security", label: "Безопасность", admin: true },
   { id: "about", label: "О системе", admin: true },
 ]
@@ -462,6 +464,7 @@ export function Settings() {
           )}
           {admin && <Telegram />}
           <Access onPasswordChanged={() => setSystemKey((k) => k + 1)} />
+          {admin && <GeoDatabase />}
           {admin && <Security info={info} />}
           {admin && <About info={info} />}
         </div>

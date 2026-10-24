@@ -65,7 +65,7 @@ export function AdviceCard({ advice, lb, onApplied, compact }: { advice: Advice;
           </button>
         )}
         {canEdit() && !advice.fix && advice.edit && (
-          <Link to={`/lbs/${lb.id}/edit`} className="mt-1 self-start text-[13px] font-semibold text-cobalt hover:text-cobalt-dark">
+          <Link to={`/lbs/${lb.id}/edit?open=${advice.edit}`} className="mt-1 self-start text-[13px] font-semibold text-cobalt hover:text-cobalt-dark">
             Открыть конструктор →
           </Link>
         )}

@@ -9,6 +9,7 @@ import { AdviceCard, StatusPill } from "@/components/LBBits"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { adviceFor } from "@/lib/advice"
 import { api, canEdit, errorMessage } from "@/lib/api"
+import { accessTag } from "@/lib/countries"
 import { describe, fromLB } from "@/lib/builderModel"
 import { across, branch, flowOf, shareWidth, useMeasured, type FlowPath } from "@/lib/flow"
 import { deleteLB, testNode } from "@/lib/lbActions"
@@ -34,6 +35,8 @@ function Tags({ lb }: { lb: LoadBalancer }) {
     const st = lb.acme_status
     tags.push({ text: `Let's Encrypt · ${st === "ok" ? "активен" : st === "error" ? "ошибка" : "выпускается"}`, tone: st === "error" ? "down" : st === "ok" ? "cobalt" : "warn" })
   }
+  const access = accessTag(lb)
+  if (access) tags.push({ text: access, tone: "cobalt" })
   if (lb.http_redirect) tags.push({ text: ":80 → HTTPS" })
   if (lb.http3_enabled) tags.push({ text: "HTTP/3" })
   if (lb.sticky_sessions_enabled) tags.push({ text: `sticky: ${lb.sticky_session_type === "cookie" ? "cookie" : "IP"}` })

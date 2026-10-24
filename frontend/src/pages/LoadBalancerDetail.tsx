@@ -10,6 +10,7 @@ import { AdviceCard, StatusPill } from "@/components/LBBits"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { adviceFor } from "@/lib/advice"
 import { api, canEdit, errorMessage } from "@/lib/api"
+import { accessText, countryName, flag } from "@/lib/countries"
 import { describe, formatMs, fromLB } from "@/lib/builderModel"
 import { across, branch, down, flowOf, shareWidth, useMeasured, type FlowKind, type FlowPath } from "@/lib/flow"
 import { humanize } from "@/lib/humanize"
@@ -304,12 +305,58 @@ function NodesTable({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void
   )
 }
 
+/** Who the balancer lets in, and who it has turned away since it started. */
+function AccessCard({ lb }: { lb: LoadBalancer }) {
+  const blocked = lb.metrics?.blocked ?? 0
+  const top = lb.metrics?.blocked_top ?? []
+  const biggest = Math.max(1, ...top.map((t) => t.count))
+  const ruled = !!(lb.access_mode || lb.access_allow?.trim() || lb.access_deny?.trim())
+  if (!ruled && blocked === 0) return null
+  return (
+    <section aria-labelledby="acc-title" className="flex flex-col gap-3.5 rounded-[18px] border border-line bg-white px-6 py-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="acc-title" className="font-display text-lg font-semibold tracking-tight">Фильтр доступа</h2>
+        <span className="text-sm text-ink-2">{accessText(lb)}</span>
+      </div>
+      {blocked > 0 ? (
+        <>
+          <p className="text-sm text-ink-2">
+            Отсечено с запуска: <strong className="font-mono text-ink">{formatNumber(blocked)}</strong>. Откуда:
+          </p>
+          <ul className="flex flex-col gap-2">
+            {top.map((t) => (
+              <li key={t.country || "none"} className="flex items-center gap-3 text-sm">
+                <span className="w-44 flex-none truncate">
+                  {t.country === "list" ? (
+                    "Список запрещённых"
+                  ) : (
+                    <>
+                      <span aria-hidden="true">{flag(t.country)}</span> {t.country ? countryName(t.country) : "страна не определена"}
+                    </>
+                  )}
+                </span>
+                <span className="h-2.5 flex-1 overflow-hidden rounded-full bg-ground">
+                  <span className="block h-full rounded-full bg-down" style={{ width: `${Math.max(2, (t.count / biggest) * 100)}%` }} />
+                </span>
+                <span className="w-16 flex-none text-right font-mono text-ink-2">{formatNumber(t.count)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="text-sm text-ink-3">С момента запуска никого не отсекали.</p>
+      )}
+    </section>
+  )
+}
+
 function Summary({ lb }: { lb: LoadBalancer }) {
   const kind = kindOf(lb)
   const first = lb.backend_group?.backends?.[0]
   const http = kind === "http" || kind === "https_term"
   const rows: [string, string][] = [
     ["Приём", `${kindLabel[kind]} · ${listenAddr(lb)}`],
+    ["Доступ", accessText(lb)],
     ["Алгоритм", algorithmLabel[lb.algorithm] ?? lb.algorithm],
     ["Закрепление", lb.sticky_sessions_enabled ? (lb.sticky_session_type === "cookie" ? "по cookie" : "по IP клиента") : "выключено"],
     ["Проверка узлов", first?.hc_enabled ? `${checkLabel[first.hc_protocol] ?? first.hc_protocol} · ${first.hc_interval || 5} с · ${first.hc_failure_threshold || 1}/${first.hc_recovery_threshold || 1}` : "выключена"],
@@ -460,6 +507,7 @@ export default function LoadBalancerDetail() {
                 colorOf={(i) => (recent[i]?.error_rate > 0 ? "bg-down" : undefined)}
               />
             </section>
+            <AccessCard lb={lb} />
             <NodesTable lb={lb} onChanged={refresh} />
           </div>
           <div className="flex min-w-0 flex-[1_1_320px] flex-col gap-6">

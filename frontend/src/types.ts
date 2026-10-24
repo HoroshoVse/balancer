@@ -58,10 +58,57 @@ export interface LoadBalancer {
   response_timeout: number
   sticky_sessions_enabled: boolean
   sticky_session_type: string
+  /** "" everyone may connect; "allow" only access_countries; "deny" everyone except access_countries */
+  access_mode?: "" | "allow" | "deny"
+  access_countries?: string // "RU,BY"
+  access_allow?: string // always let through: addresses and subnets, one per line
+  access_deny?: string // always refuse
   status?: string
   status_error?: string
   backend_group: { id?: number; name: string; backends: BackendNode[] }
-  metrics?: { total_requests?: number; average_latency_ms?: number; error_rate_percent?: number }
+  metrics?: {
+    total_requests?: number
+    average_latency_ms?: number
+    error_rate_percent?: number
+    /** connections refused by the access rules since the start, and where from */
+    blocked?: number
+    blocked_top?: { country: string; count: number }[]
+  }
+}
+
+export interface GeoSource {
+  name: string
+  url: string
+  present: boolean
+  downloading?: boolean
+  ranges: number
+  data_date?: string
+  updated_at?: string
+  error?: string
+}
+
+export interface GeoStatus {
+  loaded: boolean
+  updating: boolean
+  updated_at?: string
+  countries: number
+  ranges: number
+  sources: GeoSource[]
+  last_attempt?: string
+  last_error?: string
+  next_attempt?: string
+  auto_update: boolean
+  interval_hours: number
+  country_codes: string[]
+}
+
+export interface GeoLookup {
+  ip: string
+  you?: boolean
+  country: string
+  loaded: boolean
+  internal?: boolean
+  decision?: { allowed: boolean; country: string; reason: string; rule?: string }
 }
 
 export interface MetricsSnapshot {
