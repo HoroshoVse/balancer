@@ -6,11 +6,15 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/balancer/backend/internal/api"
 	"github.com/balancer/backend/internal/db"
 	"github.com/balancer/backend/internal/engine"
+	"github.com/balancer/backend/internal/geo"
+	"github.com/balancer/backend/internal/models"
 	"gorm.io/gorm"
 )
 
@@ -44,6 +48,25 @@ func main() {
 		log.Println("WARNING: user 'admin' still has the default password 'admin'. Change it: balancer-cli users passwd admin <new_password>")
 	}
 
+	// Country database for the access rules: saved files are read now, downloads
+	// happen in the background and only while some balancer uses country rules
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	geoDB := geo.NewManager(filepath.Join(dataDir, "geo"), geo.DefaultSources, func(level, msg string) {
+		if level == "WARN" {
+			engine.Logger.Warn(msg)
+		} else {
+			engine.Logger.Info(msg)
+		}
+	})
+	if err := geoDB.Load(); err != nil {
+		log.Printf("Reading the country database: %v", err)
+	}
+	engine.GeoIP = geoDB
+	go geoDB.Run(ctx, func() (bool, time.Duration) { return db.GeoSchedule(database) }, func() bool { return countryRulesInUse(database) })
+
 	// 2. Init Engine (Load Balancer & Health Checker)
 	balancerEngine := engine.NewEngine(database)
 	if err := balancerEngine.Start(); err != nil {
@@ -57,6 +80,7 @@ func main() {
 		apiAddr = "127.0.0.1:8080"
 	}
 	apiServer := api.NewServer(database, balancerEngine, jwtSecret)
+	apiServer.SetGeo(geoDB)
 	apiServer.SetInfo(api.SystemInfo{Version: version, APIAddr: apiAddr, JWTFromEnv: os.Getenv("JWT_SECRET") != ""})
 	apiErr := make(chan error, 1)
 	go func() { apiErr <- apiServer.Start(ctx, apiAddr) }()
@@ -83,4 +107,14 @@ func loadJWTSecret(database *gorm.DB) ([]byte, error) {
 		return []byte(secret), nil
 	}
 	return db.EnsureJWTSecret(database)
+}
+
+// countryRulesInUse reports whether any balancer filters by country, which is
+// when the country database is worth downloading.
+func countryRulesInUse(database *gorm.DB) bool {
+	var n int64
+	database.Model(&models.LoadBalancer{}).
+		Where("access_mode IN ? AND access_countries <> ''", []string{models.AccessOnly, models.AccessExcept}).
+		Count(&n)
+	return n > 0
 }

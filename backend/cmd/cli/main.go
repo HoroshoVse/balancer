@@ -20,6 +20,7 @@ func printUsage() {
 	fmt.Println("  users role <username> <role>             Change a user's role")
 	fmt.Println("  users delete <username>                  Delete a user")
 	fmt.Println("\nRoles: Admin (everything), Operator (manage load balancers), Viewer (read-only)")
+	fmt.Println("\nCountry database for the access rules: balancer-cli geo (status, update, lookup, export)")
 	os.Exit(1)
 }
 
@@ -56,6 +57,11 @@ func main() {
 
 	resource := os.Args[1]
 	action := os.Args[2]
+
+	if resource == "geo" {
+		runGeo(action, os.Args[3:])
+		return
+	}
 
 	dsn := os.Getenv("DB_DSN")
 	if dsn == "" {

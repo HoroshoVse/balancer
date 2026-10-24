@@ -63,6 +63,13 @@ type LoadBalancer struct {
 	StickySessionsEnabled bool   `json:"sticky_sessions_enabled"`
 	StickySessionType     string `json:"sticky_session_type"` // ip, cookie
 
+	// Who may connect, by source address. Connections from anyone else are
+	// dropped before any data is read (see access.go in the engine).
+	AccessMode      string `json:"access_mode"`      // "" everyone; "allow" only AccessCountries; "deny" everyone except AccessCountries
+	AccessCountries string `json:"access_countries"` // ISO 3166 codes, comma separated, e.g. "RU,BY"
+	AccessAllow     string `json:"access_allow"`     // always let these through: addresses and subnets, one per line
+	AccessDeny      string `json:"access_deny"`      // always refuse these
+
 	// Runtime state
 	Status      string                 `gorm:"-" json:"status"` // starting, running, error, stopped
 	StatusError string                 `gorm:"-" json:"status_error,omitempty"`
@@ -148,6 +155,8 @@ type Settings struct {
 	TelegramBotTokenSet bool `json:"telegram_bot_token_set" gorm:"-"`
 	TelegramChatID    string `json:"telegram_chat_id"`
 	NotificationsEnabled bool `json:"notifications_enabled" gorm:"default:false"`
+	GeoUpdateOff      bool   `json:"-"` // automatic updates of the country database are switched off
+	GeoUpdateHours    int    `json:"-"` // how often to update; 0 means every 24 hours
 	JWTSecret         string `json:"-"` // generated on first start when JWT_SECRET is not set
 	SchemaVersion     int    `json:"-"` // applied data migrations
 }

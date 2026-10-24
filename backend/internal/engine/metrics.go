@@ -23,6 +23,8 @@ type LBMetrics struct {
 	TotalRequests  uint64
 	TotalErrors    uint64
 	TotalLatencyUs uint64 // In microseconds
+	TotalBlocked   uint64   // connections refused by the access rules
+	blockedBy      sync.Map // country code ("" = none) -> *uint64
 
 	mu            sync.RWMutex
 	History       []MetricsSnapshot
@@ -72,6 +74,14 @@ var (
 		[]string{"lb_id"},
 	)
 
+	promBlocked = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "balancer_blocked_total",
+			Help: "Connections refused by the access rules, by reason",
+		},
+		[]string{"lb_id", "reason"},
+	)
+
 	promRequestLatency = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "balancer_request_duration_seconds",
@@ -115,6 +125,18 @@ func (m *MetricsRegistry) RecordRequest(lbID uint, latency time.Duration, isErro
 		atomic.AddUint64(&lbMetrics.TotalErrors, 1)
 		promTotalErrors.WithLabelValues(idStr).Inc()
 	}
+}
+
+// RecordBlocked counts a connection refused by the access rules.
+func (m *MetricsRegistry) RecordBlocked(lbID uint, country, reason string) {
+	lbm := m.getOrCreate(lbID)
+	atomic.AddUint64(&lbm.TotalBlocked, 1)
+	v, ok := lbm.blockedBy.Load(country)
+	if !ok {
+		v, _ = lbm.blockedBy.LoadOrStore(country, new(uint64))
+	}
+	atomic.AddUint64(v.(*uint64), 1)
+	promBlocked.WithLabelValues(strconv.Itoa(int(lbID)), reason).Inc()
 }
 
 func (m *MetricsRegistry) RecordBackendRequest(backendID uint, latency time.Duration, isError bool) {
@@ -188,11 +210,16 @@ func (m *MetricsRegistry) GetMetricsForLB(lbID uint) map[string]interface{} {
 	errRate := float64(0)
 	if req > 0 { errRate = float64(errs) / float64(req) * 100.0 }
 
-	return map[string]interface{}{
+	out := map[string]interface{}{
 		"total_requests": req,
 		"average_latency_ms": avgMs(lat, req),
 		"error_rate_percent": errRate,
 	}
+	if blocked := atomic.LoadUint64(&lbm.TotalBlocked); blocked > 0 {
+		out["blocked"] = blocked
+		out["blocked_top"] = lbm.topBlocked(5)
+	}
+	return out
 }
 
 func (m *MetricsRegistry) GetMetricsHistoryForLB(lbID uint) []MetricsSnapshot {
@@ -339,4 +366,23 @@ func (m *MetricsRegistry) StartSnapshotLoop() {
 			})
 		}
 	}()
+}
+
+type blockedCountry struct {
+	Country string `json:"country"` // "" when the address has none
+	Count   uint64 `json:"count"`
+}
+
+// topBlocked lists the countries most refused connections came from.
+func (lbm *LBMetrics) topBlocked(n int) []blockedCountry {
+	var all []blockedCountry
+	lbm.blockedBy.Range(func(k, v any) bool {
+		all = append(all, blockedCountry{k.(string), atomic.LoadUint64(v.(*uint64))})
+		return true
+	})
+	sort.Slice(all, func(i, j int) bool { return all[i].Count > all[j].Count || all[i].Count == all[j].Count && all[i].Country < all[j].Country })
+	if len(all) > n {
+		all = all[:n]
+	}
+	return all
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/balancer/backend/internal/db"
 	"github.com/balancer/backend/internal/engine"
+	"github.com/balancer/backend/internal/geo"
 	"github.com/balancer/backend/internal/models"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gorm.io/gorm"
@@ -26,6 +27,7 @@ type Server struct {
 	limiter   *loginLimiter
 	dummyHash []byte // compared against when the user doesn't exist, to keep timing uniform
 	info      SystemInfo
+	geo       *geo.Manager
 }
 
 // SystemInfo describes how this instance runs, for the security checklist in the UI.
@@ -70,6 +72,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/settings/update", s.authed(models.RoleAdmin, s.updateSettings))
 	mux.HandleFunc("/api/v1/settings/telegram/test", s.authed(models.RoleAdmin, s.testTelegram))
 	mux.HandleFunc("/api/v1/system", s.authed(models.RoleAdmin, s.getSystem))
+	mux.HandleFunc("/api/v1/geo", s.authed(models.RoleViewer, s.getGeo))
+	mux.HandleFunc("/api/v1/geo/update", s.authed(models.RoleAdmin, s.updateGeo))
+	mux.HandleFunc("/api/v1/geo/settings", s.authed(models.RoleAdmin, s.updateGeoSettings))
+	mux.HandleFunc("/api/v1/geo/lookup", s.authed(models.RoleViewer, s.lookupGeo))
 	mux.HandleFunc("/api/v1/load-balancers/history", s.authed(models.RoleViewer, s.getLBMetricsHistory)) // Expected query param ?id=X
 	mux.HandleFunc("/api/v1/metrics/history", s.authed(models.RoleViewer, s.getGlobalMetricsHistory))
 	mux.HandleFunc("/api/v1/metrics/host", s.authed(models.RoleViewer, s.getHostMetrics))
@@ -477,6 +483,10 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 		existing.ResponseTimeout = input.ResponseTimeout
 		existing.StickySessionsEnabled = input.StickySessionsEnabled
 		existing.StickySessionType = input.StickySessionType
+		existing.AccessMode = input.AccessMode
+		existing.AccessCountries = input.AccessCountries
+		existing.AccessAllow = input.AccessAllow
+		existing.AccessDeny = input.AccessDeny
 
 		// Update backend group
 		existing.BackendGroup.Name = input.BackendGroup.Name

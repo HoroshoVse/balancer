@@ -1,6 +1,7 @@
 package db
 
 import (
+	"time"
 	"crypto/rand"
 	"encoding/hex"
 	"log"
@@ -171,3 +172,24 @@ func randomHex(n int) (string, error) {
 	}
 	return hex.EncodeToString(b), nil
 }
+
+// GeoSchedule reads how the country database is kept up to date: whether
+// automatic updates are on, and how often.
+func GeoSchedule(db *gorm.DB) (auto bool, every time.Duration) {
+	settings, err := LoadSettings(db)
+	if err != nil {
+		return true, 24 * time.Hour
+	}
+	hours := settings.GeoUpdateHours
+	if hours <= 0 {
+		hours = DefaultGeoUpdateHours
+	}
+	return !settings.GeoUpdateOff, time.Duration(hours) * time.Hour
+}
+
+// Bounds of the update interval, in hours.
+const (
+	DefaultGeoUpdateHours = 24
+	MinGeoUpdateHours     = 6
+	MaxGeoUpdateHours     = 24 * 30
+)

@@ -83,6 +83,7 @@ func (lb *LoadBalancer) Normalize() {
 	}
 	lb.ACMEDomains = strings.TrimSpace(lb.ACMEDomains)
 	lb.ACMEEmail = strings.TrimSpace(lb.ACMEEmail)
+	lb.normalizeAccess()
 	if strings.TrimSpace(lb.BackendGroup.Name) == "" {
 		lb.BackendGroup.Name = lb.Name + " Group"
 	}
@@ -121,6 +122,9 @@ func (lb *LoadBalancer) Validate() error {
 	}
 	if lb.BackupMode != BackupAll && lb.BackupMode != BackupOrdered {
 		return fmt.Errorf("unknown backup mode %q (expected all or ordered)", lb.BackupMode)
+	}
+	if err := lb.validateAccess(); err != nil {
+		return err
 	}
 	if lb.ListenPort < 1 || lb.ListenPort > 65535 {
 		return fmt.Errorf("listen port must be between 1 and 65535")
