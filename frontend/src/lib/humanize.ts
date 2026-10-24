@@ -38,10 +38,12 @@ const rules: Rule[] = [
     text: (m) => `Достигнут предел UDP-сессий (${m[2]}): за минуту отброшено ${m[1]} новых клиентов. Для DNS включите режим «DNS-сервер»`,
   },
   {
-    re: /^.+?: (\d+) connections refused by the access rules in the last .+?; most from: (.+)$/,
+    re: /^.+?: (\d+) connections refused by the access rules in the last .+?; most from: (.+?)(?:; domains: (.+))?$/,
     kind: "warn",
     notable: true,
-    text: (m) => `Фильтр доступа отсёк ${m[1]} подключений за минуту. Чаще всего: ${m[2].replace("deny list", "список запрещённых").replace("unknown country", "страна не определена")}`,
+    text: (m) =>
+      `Фильтр доступа отсёк ${m[1]} подключений за минуту. Чаще всего: ${m[2].replace("deny list", "список запрещённых").replace("unknown country", "страна не определена")}` +
+      (m[3] ? `. Спрашивали: ${m[3]}` : ""),
   },
   { re: /^.+?: the country database is not loaded, so the country filter is letting everyone in/, kind: "warn", notable: true, text: () => "База стран не загружена — фильтр по странам пока пропускает всех. Загрузите её в Настройках" },
   { re: /^Geo database: (.+?) updated \((\d+) IPv4 and (\d+) IPv6 ranges\)$/, kind: "info", text: (m) => `База стран: данные ${m[1]} обновлены` },

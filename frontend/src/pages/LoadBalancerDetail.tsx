@@ -12,13 +12,14 @@ import { adviceFor } from "@/lib/advice"
 import { api, canEdit, errorMessage } from "@/lib/api"
 import { accessText, countryName, flag } from "@/lib/countries"
 import { describe, formatMs, fromLB } from "@/lib/builderModel"
+import { CLIENT_WINDOW_MIN, listCovers, withDenied } from "@/lib/clients"
 import { across, branch, down, flowOf, shareWidth, useMeasured, type FlowKind, type FlowPath } from "@/lib/flow"
 import { humanize } from "@/lib/humanize"
 import { deleteLB, mapNodes, testNode, updateLB } from "@/lib/lbActions"
 import { useLBs } from "@/lib/lbs"
 import { activeNodes, algorithmLabel, backupQueue, formatNumber, kindLabel, kindOf, listenAddr, orderedBackups } from "@/lib/lbModel"
 import { usePoll } from "@/lib/usePoll"
-import type { BackendNode, LoadBalancer, LogEntry, MetricsSnapshot } from "@/types"
+import type { BackendNode, ClientStat, LoadBalancer, LogEntry, MetricsSnapshot } from "@/types"
 
 const checkLabel: Record<string, string> = { dns: "DNS-запрос", http: "HTTP-запрос", https: "HTTPS-запрос", tcp: "подключение TCP", udp: "пакет UDP" }
 
@@ -305,6 +306,101 @@ function NodesTable({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void
   )
 }
 
+/** Which addresses are hitting the balancer, with a one-click way to refuse one of them. */
+function ClientsCard({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void }) {
+  const editable = canEdit()
+  const rows = lb.metrics?.top_clients ?? []
+  const [target, setTarget] = useState<ClientStat | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const block = async (c: ClientStat) => {
+    setBusy(true)
+    try {
+      await updateLB(lb, (x) => ({ ...x, access_deny: withDenied(x.access_deny, c.ip) }))
+      toast.success(`${c.ip} в списке запрещённых: его подключения отклоняются`)
+      onChanged()
+    } catch (err) {
+      toast.error(errorMessage(err))
+    } finally {
+      setBusy(false)
+      setTarget(null)
+    }
+  }
+  const where = (c: ClientStat) =>
+    c.internal ? "внутренняя сеть" : c.country ? `${flag(c.country)} ${countryName(c.country)}`.trim() : "страна не определена"
+
+  return (
+    <section aria-labelledby="cli-title" className="overflow-hidden rounded-[18px] border border-line bg-white">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 px-6 pb-3 pt-5">
+        <h2 id="cli-title" className="font-display text-lg font-semibold tracking-tight">Кто обращается</h2>
+        <span className="text-sm text-ink-2">за последние {CLIENT_WINDOW_MIN} минут</span>
+      </div>
+      {rows.length === 0 ? (
+        <p className="px-6 pb-4 text-sm text-ink-3">Пока никто не обращался к этому балансировщику.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] border-collapse text-sm">
+            <thead>
+              <tr className="text-left text-xs text-ink-3">
+                <th scope="col" className="border-t border-line-soft px-6 py-2.5 font-medium">Адрес</th>
+                <th scope="col" className="border-t border-line-soft px-3 py-2.5 font-medium">Страна</th>
+                <th scope="col" className="border-t border-line-soft px-3 py-2.5 text-right font-medium">Принято</th>
+                <th scope="col" className="border-t border-line-soft px-3 py-2.5 text-right font-medium">Отказано</th>
+                <th scope="col" className="border-t border-line-soft px-6 py-2.5"><span className="sr-only">Действие</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((c) => {
+                const denied = listCovers(lb.access_deny, c.ip)
+                const allowed = !denied && listCovers(lb.access_allow, c.ip)
+                return (
+                  <tr key={c.ip}>
+                    <td className="border-t border-ground px-6 py-3 font-mono">{c.ip}</td>
+                    <td className="border-t border-ground px-3 py-3 text-ink-2">{where(c)}</td>
+                    <td className="border-t border-ground px-3 py-3 text-right font-mono">{formatNumber(c.accepted)}</td>
+                    <td className={`border-t border-ground px-3 py-3 text-right font-mono ${c.refused > 0 ? "text-down-text" : "text-ink-3"}`}>{formatNumber(c.refused)}</td>
+                    <td className="border-t border-ground px-6 py-2 text-right">
+                      {denied ? (
+                        <span className="text-[13px] text-ink-3">в списке запрещённых</span>
+                      ) : allowed ? (
+                        <span className="text-[13px] text-ink-3" title="Список разрешённых проверяется раньше списка запрещённых">в списке разрешённых</span>
+                      ) : (
+                        editable && (
+                          <button
+                            type="button"
+                            onClick={() => setTarget(c)}
+                            aria-label={`Заблокировать ${c.ip}`}
+                            className="h-9 rounded-lg border border-line px-3 text-[13px] font-medium text-down-text hover:bg-down-soft"
+                          >
+                            Заблокировать
+                          </button>
+                        )
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="border-t border-line-soft px-6 py-3 text-xs leading-relaxed text-ink-3">
+        Считается каждое подключение или пакет, в том числе отклонённые. Счётчики хранятся в памяти и обнуляются при перезапуске сервера. Если в поток летят пакеты с подменой адреса, показаны самые активные адреса, а цифры могут быть чуть занижены.
+      </p>
+      <ConfirmDialog
+        open={!!target}
+        onOpenChange={(open) => !open && !busy && setTarget(null)}
+        title={`Заблокировать ${target?.ip ?? ""}?`}
+        text={`Адрес${target?.country ? ` (${countryName(target.country)})` : ""} попадёт в список запрещённых этого балансировщика, и его подключения будут отклоняться. Балансировщик на мгновение перезапустится. ${target?.internal ? "Это внутренний адрес: проверьте, что он не принадлежит вашему серверу, проверке узлов или другому балансировщику. " : ""}Убрать адрес можно в конструкторе, в разделе доступа.`}
+        confirmLabel="Заблокировать"
+        danger
+        busy={busy}
+        onConfirm={() => target && block(target)}
+      />
+    </section>
+  )
+}
+
 /** Who the balancer lets in, and who it has turned away since it started. */
 function AccessCard({ lb }: { lb: LoadBalancer }) {
   const blocked = lb.metrics?.blocked ?? 0
@@ -344,11 +440,45 @@ function AccessCard({ lb }: { lb: LoadBalancer }) {
               </li>
             ))}
           </ul>
+          <AskedFor lb={lb} />
         </>
       ) : (
         <p className="text-sm text-ink-3">С момента запуска никого не отсекали.</p>
       )}
     </section>
+  )
+}
+
+/** The names the refused DNS queries asked for: what an attack on a resolver is about. */
+function AskedFor({ lb }: { lb: LoadBalancer }) {
+  const rows = lb.metrics?.blocked_domains ?? []
+  const biggest = Math.max(1, ...rows.map((r) => r.count))
+  return (
+    <div className="flex flex-col gap-2 border-t border-line-soft pt-3.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold">Что спрашивали</h3>
+        <span className="text-xs text-ink-3">отказанные DNS-запросы за последние {CLIENT_WINDOW_MIN} минут</span>
+      </div>
+      {rows.length > 0 ? (
+        <ul className="flex flex-col gap-2">
+          {rows.map((r) => (
+            <li key={`${r.domain} ${r.type}`} className="flex items-center gap-3 text-sm">
+              <span className="w-56 flex-none truncate font-mono" title={r.domain}>{r.domain}</span>
+              <span className="w-16 flex-none font-mono text-xs text-ink-3">{r.type}</span>
+              <span className="h-2.5 flex-1 overflow-hidden rounded-full bg-ground">
+                <span className="block h-full rounded-full bg-down" style={{ width: `${Math.max(2, (r.count / biggest) * 100)}%` }} />
+              </span>
+              <span className="w-16 flex-none text-right font-mono text-ink-2">{formatNumber(r.count)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-ink-3">Запросов с именами не было.</p>
+      )}
+      <p className="text-xs leading-relaxed text-ink-3">
+        Имена видны только у DNS по UDP: подключения TCP и DoH отклоняются до того, как сервер прочитает запрос. Поддомены сворачиваются: все имена вида *.example.com считаются как example.com.
+      </p>
+    </div>
   )
 }
 
@@ -509,6 +639,7 @@ export default function LoadBalancerDetail() {
                 colorOf={(i) => (recent[i]?.error_rate > 0 ? "bg-down" : undefined)}
               />
             </section>
+            <ClientsCard lb={lb} onChanged={refresh} />
             <AccessCard lb={lb} />
             <NodesTable lb={lb} onChanged={refresh} />
           </div>

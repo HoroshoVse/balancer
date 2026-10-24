@@ -173,12 +173,26 @@ func (s prefixSet) match(a netip.Addr) (string, bool) {
 // an attack that is thousands of refusals a second, and one log line each
 // would drown everything else.
 type blockLog struct {
-	mu    sync.Mutex
-	count int
-	by    map[string]int
+	mu      sync.Mutex
+	count   int
+	by      map[string]int
+	queries map[string]*int // "domain\x00TYPE" of refused DNS queries -> how many
 }
 
-func newBlockLog() *blockLog { return &blockLog{by: map[string]int{}} }
+func newBlockLog() *blockLog { return &blockLog{by: map[string]int{}, queries: map[string]*int{}} }
+
+// noteQuery counts a refused DNS query by what it asked for. An asked-for name
+// that is already known costs no allocation.
+func (b *blockLog) noteQuery(label []byte) {
+	b.mu.Lock()
+	if n, ok := b.queries[string(label)]; ok {
+		*n++
+	} else if len(b.queries) < 300 {
+		one := 1
+		b.queries[string(label)] = &one
+	}
+	b.mu.Unlock()
+}
 
 func (b *blockLog) note(key string) {
 	b.mu.Lock()
@@ -192,8 +206,8 @@ func (b *blockLog) note(key string) {
 // flush writes the summary since the last flush, if there was anything.
 func (b *blockLog) flush(lb string, interval time.Duration) {
 	b.mu.Lock()
-	count, by := b.count, b.by
-	b.count, b.by = 0, map[string]int{}
+	count, by, queries := b.count, b.by, b.queries
+	b.count, b.by, b.queries = 0, map[string]int{}, map[string]*int{}
 	b.mu.Unlock()
 	if count == 0 {
 		return
@@ -214,7 +228,33 @@ func (b *blockLog) flush(lb string, interval time.Duration) {
 	for i, e := range top {
 		parts[i] = fmt.Sprintf("%s ×%d", e.k, e.n)
 	}
-	Logger.WarnLB(lb, fmt.Sprintf("%s: %d connections refused by the access rules in the last %s; most from: %s", lb, count, interval, strings.Join(parts, ", ")))
+	msg := fmt.Sprintf("%s: %d connections refused by the access rules in the last %s; most from: %s", lb, count, interval, strings.Join(parts, ", "))
+	if asked := topQueries(queries, 3); asked != "" {
+		msg += "; domains: " + asked
+	}
+	Logger.WarnLB(lb, msg)
+}
+
+// topQueries lists the most asked-for names as "example.com TXT ×4100, ...".
+func topQueries(queries map[string]*int, n int) string {
+	type kv struct {
+		k string
+		n int
+	}
+	var top []kv
+	for k, c := range queries {
+		top = append(top, kv{k, *c})
+	}
+	sort.Slice(top, func(i, j int) bool { return top[i].n > top[j].n || top[i].n == top[j].n && top[i].k < top[j].k })
+	if len(top) > n {
+		top = top[:n]
+	}
+	parts := make([]string, len(top))
+	for i, e := range top {
+		domain, qtype := splitLabel(e.k)
+		parts[i] = fmt.Sprintf("%s %s ×%d", domain, qtype, e.n)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (b *blockLog) run(done <-chan struct{}, lb string) {
@@ -247,17 +287,25 @@ func addrOf(a net.Addr) (netip.Addr, bool) {
 	return ap.Addr().Unmap(), err == nil
 }
 
-// admit reports whether a client at addr may be served, and counts the refusals.
-func (l *LoadBalancerInstance) admit(addr net.Addr) bool {
-	p := l.access
-	if p == nil {
-		return true
-	}
+// admit reports whether a client at addr may be served. Every client is counted
+// for the "who is hitting this balancer" statistic, rules or no rules; the
+// refusals are counted again as such.
+func (l *LoadBalancerInstance) admit(addr net.Addr) bool { return l.admitPacket(addr, nil) }
+
+// admitPacket is admit for a datagram: when it is refused and looks like a DNS
+// query, the name it asked for is counted as well.
+func (l *LoadBalancerInstance) admitPacket(addr net.Addr, payload []byte) bool {
 	a, ok := addrOf(addr)
 	if !ok {
 		return true
 	}
+	p := l.access
+	if p == nil {
+		l.clients.record(a, false)
+		return true
+	}
 	d := p.decide(a)
+	l.clients.record(a, !d.Allowed)
 	if d.Allowed {
 		return true
 	}
@@ -275,6 +323,13 @@ func (l *LoadBalancerInstance) admit(addr net.Addr) bool {
 	}
 	Metrics.RecordBlocked(l.Config.ID, where, d.Reason)
 	p.blocks.note(key)
+	if payload != nil {
+		var label [maxQueryLabel]byte
+		if n, ok := queryLabel(payload, &label); ok {
+			l.domains.record(label[:n])
+			p.blocks.noteQuery(label[:n])
+		}
+	}
 	return false
 }
 

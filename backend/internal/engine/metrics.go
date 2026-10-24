@@ -25,6 +25,8 @@ type LBMetrics struct {
 	TotalLatencyUs uint64 // In microseconds
 	TotalBlocked   uint64   // connections refused by the access rules
 	blockedBy      sync.Map // country code ("" = none) -> *uint64
+	clients        *clientTracker // who is hitting the balancer, served or refused
+	domains        *domainTracker // what the refused DNS queries asked for
 
 	mu            sync.RWMutex
 	History       []MetricsSnapshot
@@ -97,7 +99,7 @@ func (m *MetricsRegistry) getOrCreate(lbID uint) *LBMetrics {
 	if ok {
 		return val.(*LBMetrics)
 	}
-	newMetrics := &LBMetrics{}
+	newMetrics := &LBMetrics{clients: newClientTracker(), domains: newDomainTracker()}
 	actual, _ := m.lbs.LoadOrStore(lbID, newMetrics)
 	return actual.(*LBMetrics)
 }
@@ -218,6 +220,12 @@ func (m *MetricsRegistry) GetMetricsForLB(lbID uint) map[string]interface{} {
 	if blocked := atomic.LoadUint64(&lbm.TotalBlocked); blocked > 0 {
 		out["blocked"] = blocked
 		out["blocked_top"] = lbm.topBlocked(5)
+		if top := lbm.domains.top(topClientsShown); len(top) > 0 {
+			out["blocked_domains"] = top
+		}
+	}
+	if top := lbm.clients.topClients(topClientsShown); len(top) > 0 {
+		out["top_clients"] = top
 	}
 	return out
 }

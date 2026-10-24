@@ -312,7 +312,7 @@ func (l *LoadBalancerInstance) startDNS() error {
 			continue
 		}
 		delay = 0
-		if !l.admit(client) {
+		if !l.admitPacket(client, buf[:n]) {
 			continue
 		}
 		proxy.handleQuery(buf[:n], client)

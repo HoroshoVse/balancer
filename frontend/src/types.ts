@@ -73,7 +73,21 @@ export interface LoadBalancer {
     /** connections refused by the access rules since the start, and where from */
     blocked?: number
     blocked_top?: { country: string; count: number }[]
+    /** what the refused DNS queries (UDP) asked for in the last 10 minutes, by registrable domain and type */
+    blocked_domains?: { domain: string; type: string; count: number }[]
+    /** the busiest client addresses of the last 10 minutes; absent until someone connects */
+    top_clients?: ClientStat[]
   }
+}
+
+export interface ClientStat {
+  ip: string
+  /** "" when unknown, when the address is internal or while the country database is not loaded */
+  country: string
+  /** a private, loopback or link-local address */
+  internal?: boolean
+  accepted: number
+  refused: number
 }
 
 export interface GeoSource {

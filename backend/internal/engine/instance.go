@@ -86,7 +86,9 @@ type LoadBalancerInstance struct {
 	renewAlerted  sync.Map     // domain -> true after a failed certificate renewal was reported
 	notify        func(string) // sends an alert; defaults to Telegram
 
-	access *accessPolicy // who may connect; nil when everyone may
+	access  *accessPolicy // who may connect; nil when everyone may
+	clients *clientTracker // every client counted, shared with the balancer's metrics so it outlives a restart
+	domains *domainTracker // names asked for by refused DNS queries, likewise
 
 	ejected   sync.Map // backend ID -> unix nanos until which new connections avoid it (see dial.go)
 	dialFails sync.Map // backend ID -> *failTracker
@@ -122,6 +124,8 @@ func NewLoadBalancerInstance(config models.LoadBalancer, hc *HealthChecker) *Loa
 	inst.backendNames.Store("")
 	inst.backupServing.Store((*models.BackendServer)(nil))
 	inst.strategy = newStrategy(config.Algorithm, &inst.conns)
+	lbm := Metrics.getOrCreate(config.ID)
+	inst.clients, inst.domains = lbm.clients, lbm.domains
 	if inst.access = newAccessPolicy(config); inst.access != nil {
 		go inst.access.blocks.run(ctx.Done(), config.Name)
 	}
@@ -568,7 +572,7 @@ func (l *LoadBalancerInstance) startUDP() error {
 			continue
 		}
 		delay = 0
-		if !l.admit(clientAddr) {
+		if !l.admitPacket(clientAddr, buf[:n]) {
 			continue
 		}
 		l.handleUDPPacket(buf[:n], clientAddr, conn)
@@ -762,9 +766,7 @@ func (l *LoadBalancerInstance) startHTTP() error {
 	if err != nil {
 		return err
 	}
-	if l.access != nil {
-		ln = &aclListener{Listener: ln, l: l} // refused addresses never reach TLS or HTTP parsing
-	}
+	ln = &aclListener{Listener: ln, l: l} // counts every client; refused addresses never reach TLS or HTTP parsing
 	server := &http.Server{
 		Handler:           handler,
 		TLSConfig:         tlsConfig,
@@ -809,11 +811,7 @@ func (l *LoadBalancerInstance) startHTTP() error {
 		}
 		go func() {
 			Logger.InfoLB(l.Config.Name, fmt.Sprintf("HTTP/3 (QUIC) LoadBalancer %s listening on %s", l.Config.Name, addr))
-			quic := udpConn
-			if l.access != nil {
-				quic = &aclPacketConn{PacketConn: udpConn, l: l}
-			}
-			errChan <- l.http3Server.Serve(quic)
+			errChan <- l.http3Server.Serve(&aclPacketConn{PacketConn: udpConn, l: l})
 		}()
 	}
 
