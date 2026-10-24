@@ -3,8 +3,10 @@ import { Link, useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 import { Ellipsis, Globe, ShieldCheck } from "lucide-react"
 import { Bars } from "@/components/Bars"
+import { BlockClientDialog } from "@/components/BlockClientDialog"
 import { ConfirmDialog } from "@/components/ConfirmDialog"
 import { FlowPaths } from "@/components/Flow"
+import { QueriesDialog } from "@/components/QueriesDialog"
 import { Switch } from "@/components/Switch"
 import { AdviceCard, StatusPill } from "@/components/LBBits"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
@@ -12,7 +14,7 @@ import { adviceFor } from "@/lib/advice"
 import { api, canEdit, errorMessage } from "@/lib/api"
 import { accessText, countryName, flag } from "@/lib/countries"
 import { describe, formatMs, fromLB } from "@/lib/builderModel"
-import { CLIENT_WINDOW_MIN, listCovers, withDenied } from "@/lib/clients"
+import { CLIENT_WINDOW_MIN, clientWhere, listCovers } from "@/lib/clients"
 import { across, branch, down, flowOf, shareWidth, useMeasured, type FlowKind, type FlowPath } from "@/lib/flow"
 import { humanize } from "@/lib/humanize"
 import { deleteLB, mapNodes, testNode, updateLB } from "@/lib/lbActions"
@@ -309,36 +311,57 @@ function NodesTable({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void
 /** Which addresses are hitting the balancer, with a one-click way to refuse one of them. */
 function ClientsCard({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void }) {
   const editable = canEdit()
-  const rows = lb.metrics?.top_clients ?? []
+  // Rules exist: what matters is who is being refused. Without rules nothing is, so show everyone.
+  const ruled = !!(lb.access_mode || lb.access_allow?.trim() || lb.access_deny?.trim())
+  const [view, setView] = useState<"refused" | "all">(ruled ? "refused" : "all")
+  const rows = (view === "refused" ? lb.metrics?.top_refused_clients : lb.metrics?.top_clients) ?? []
   const [target, setTarget] = useState<ClientStat | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  const block = async (c: ClientStat) => {
-    setBusy(true)
-    try {
-      await updateLB(lb, (x) => ({ ...x, access_deny: withDenied(x.access_deny, c.ip) }))
-      toast.success(`${c.ip} в списке запрещённых: его подключения отклоняются`)
-      onChanged()
-    } catch (err) {
-      toast.error(errorMessage(err))
-    } finally {
-      setBusy(false)
-      setTarget(null)
-    }
-  }
-  const where = (c: ClientStat) =>
-    c.internal ? "внутренняя сеть" : c.country ? `${flag(c.country)} ${countryName(c.country)}`.trim() : "страна не определена"
+  const [asked, setAsked] = useState(false)
+  // Names are read from DNS queries over UDP; no other kind of balancer sees them
+  const kind = kindOf(lb)
+  const showsNames = kind === "udp" || kind === "dns"
 
   return (
     <section aria-labelledby="cli-title" className="overflow-hidden rounded-[18px] border border-line bg-white">
       <div className="flex flex-wrap items-baseline justify-between gap-2 px-6 pb-3 pt-5">
         <h2 id="cli-title" className="font-display text-lg font-semibold tracking-tight">Кто обращается</h2>
-        <span className="text-sm text-ink-2">за последние {CLIENT_WINDOW_MIN} минут</span>
+        <div className="flex flex-wrap items-center gap-3">
+          <div role="group" aria-label="Каких показывать" className="inline-flex gap-0.5 rounded-xl border border-line bg-white p-1">
+            {([["refused", "Отклонённые"], ["all", "Все"]] as const).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={view === key}
+                onClick={() => setView(key)}
+                className={`h-8 rounded-lg px-3 text-[13px] font-medium ${view === key ? "bg-ink text-white" : "text-ink-2 hover:text-ink"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {showsNames && (
+            <button
+              type="button"
+              onClick={() => setAsked(true)}
+              className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-line px-3 text-[13px] font-medium hover:bg-accent"
+            >
+              <Globe className="h-3.5 w-3.5" aria-hidden="true" />
+              Что спрашивали
+            </button>
+          )}
+          <span className="text-sm text-ink-2">за последние {CLIENT_WINDOW_MIN} минут</span>
+        </div>
       </div>
       {rows.length === 0 ? (
-        <p className="px-6 pb-4 text-sm text-ink-3">Пока никто не обращался к этому балансировщику.</p>
+        <p className="px-6 pb-4 text-sm text-ink-3">
+          {view === "refused"
+            ? ruled
+              ? "За последние 10 минут никого не отклоняли. Нажмите «Все», чтобы увидеть всех, кто обращался."
+              : "Правил доступа нет, поэтому никого не отклоняют. Нажмите «Все»."
+            : "Пока никто не обращался к этому балансировщику."}
+        </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="relative overflow-x-auto">
           <table className="w-full min-w-[560px] border-collapse text-sm">
             <thead>
               <tr className="text-left text-xs text-ink-3">
@@ -356,7 +379,7 @@ function ClientsCard({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => voi
                 return (
                   <tr key={c.ip}>
                     <td className="border-t border-ground px-6 py-3 font-mono">{c.ip}</td>
-                    <td className="border-t border-ground px-3 py-3 text-ink-2">{where(c)}</td>
+                    <td className="border-t border-ground px-3 py-3 text-ink-2">{clientWhere(c)}</td>
                     <td className="border-t border-ground px-3 py-3 text-right font-mono">{formatNumber(c.accepted)}</td>
                     <td className={`border-t border-ground px-3 py-3 text-right font-mono ${c.refused > 0 ? "text-down-text" : "text-ink-3"}`}>{formatNumber(c.refused)}</td>
                     <td className="border-t border-ground px-6 py-2 text-right">
@@ -387,16 +410,8 @@ function ClientsCard({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => voi
       <p className="border-t border-line-soft px-6 py-3 text-xs leading-relaxed text-ink-3">
         Считается каждое подключение или пакет, в том числе отклонённые. Счётчики хранятся в памяти и обнуляются при перезапуске сервера. Если в поток летят пакеты с подменой адреса, показаны самые активные адреса, а цифры могут быть чуть занижены.
       </p>
-      <ConfirmDialog
-        open={!!target}
-        onOpenChange={(open) => !open && !busy && setTarget(null)}
-        title={`Заблокировать ${target?.ip ?? ""}?`}
-        text={`Адрес${target?.country ? ` (${countryName(target.country)})` : ""} попадёт в список запрещённых этого балансировщика, и его подключения будут отклоняться. Балансировщик на мгновение перезапустится. ${target?.internal ? "Это внутренний адрес: проверьте, что он не принадлежит вашему серверу, проверке узлов или другому балансировщику. " : ""}Убрать адрес можно в конструкторе, в разделе доступа.`}
-        confirmLabel="Заблокировать"
-        danger
-        busy={busy}
-        onConfirm={() => target && block(target)}
-      />
+      <BlockClientDialog lb={lb} target={target} onClose={() => setTarget(null)} onChanged={onChanged} />
+      {showsNames && <QueriesDialog lb={lb} open={asked} onOpenChange={setAsked} onChanged={onChanged} />}
     </section>
   )
 }
@@ -451,6 +466,8 @@ function AccessCard({ lb }: { lb: LoadBalancer }) {
 
 /** The names the refused DNS queries asked for: what an attack on a resolver is about. */
 function AskedFor({ lb }: { lb: LoadBalancer }) {
+  const kind = kindOf(lb)
+  const dnsOverUdp = kind === "udp" || kind === "dns"
   const rows = lb.metrics?.blocked_domains ?? []
   const biggest = Math.max(1, ...rows.map((r) => r.count))
   return (
@@ -463,9 +480,9 @@ function AskedFor({ lb }: { lb: LoadBalancer }) {
         <ul className="flex flex-col gap-2">
           {rows.map((r) => (
             <li key={`${r.domain} ${r.type}`} className="flex items-center gap-3 text-sm">
-              <span className="w-56 flex-none truncate font-mono" title={r.domain}>{r.domain}</span>
-              <span className="w-16 flex-none font-mono text-xs text-ink-3">{r.type}</span>
-              <span className="h-2.5 flex-1 overflow-hidden rounded-full bg-ground">
+              <span className="min-w-0 flex-1 truncate font-mono sm:w-56 sm:flex-none" title={r.domain}>{r.domain}</span>
+              <span className="w-12 flex-none font-mono text-xs text-ink-3 sm:w-16">{r.type}</span>
+              <span className="hidden h-2.5 flex-1 overflow-hidden rounded-full bg-ground sm:block">
                 <span className="block h-full rounded-full bg-down" style={{ width: `${Math.max(2, (r.count / biggest) * 100)}%` }} />
               </span>
               <span className="w-16 flex-none text-right font-mono text-ink-2">{formatNumber(r.count)}</span>
@@ -473,10 +490,14 @@ function AskedFor({ lb }: { lb: LoadBalancer }) {
           ))}
         </ul>
       ) : (
-        <p className="text-sm text-ink-3">Запросов с именами не было.</p>
+        <p className="text-sm text-ink-3">
+          {dnsOverUdp
+            ? "Отклонённых DNS-запросов с именами пока не было."
+            : "У этого балансировщика имён не видно: подключения отклоняются до того, как сервер прочитает запрос. Имена есть только у DNS по UDP, откройте такой балансировщик."}
+        </p>
       )}
       <p className="text-xs leading-relaxed text-ink-3">
-        Имена видны только у DNS по UDP: подключения TCP и DoH отклоняются до того, как сервер прочитает запрос. Поддомены сворачиваются: все имена вида *.example.com считаются как example.com.
+        Имена видны только у DNS по UDP: подключения TCP и DoH отклоняются до того, как сервер прочитает запрос. Поддомены сворачиваются: все имена вида *.example.com считаются как example.com. Кто именно спрашивал и прошёл ли запрос, показывает кнопка «Что спрашивали» в карточке «Кто обращается».
       </p>
     </div>
   )

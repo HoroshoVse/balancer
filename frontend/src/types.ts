@@ -77,6 +77,8 @@ export interface LoadBalancer {
     blocked_domains?: { domain: string; type: string; count: number }[]
     /** the busiest client addresses of the last 10 minutes; absent until someone connects */
     top_clients?: ClientStat[]
+    /** the addresses refused most, whatever else is served */
+    top_refused_clients?: ClientStat[]
   }
 }
 
@@ -88,6 +90,24 @@ export interface ClientStat {
   internal?: boolean
   accepted: number
   refused: number
+}
+
+/** One DNS name (by registrable domain and type) with how its queries fared and who asked. */
+export interface QueryDomain {
+  domain: string
+  type: string
+  accepted: number
+  refused: number
+  /** the busiest askers first; at most a few, see other_* for the rest */
+  clients: ClientStat[]
+  /** queries of addresses that are not listed */
+  other_accepted?: number
+  other_refused?: number
+}
+
+export interface QueryReport {
+  window_seconds: number
+  domains: QueryDomain[]
 }
 
 export interface GeoSource {

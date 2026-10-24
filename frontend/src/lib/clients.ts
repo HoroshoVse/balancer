@@ -1,5 +1,12 @@
 // Helpers for the "who is hitting this balancer" card.
 
+import { countryName, flag } from "@/lib/countries"
+import type { ClientStat } from "@/types"
+
+/** Where an address is from, in words. */
+export const clientWhere = (c: Pick<ClientStat, "internal" | "country">) =>
+  c.internal ? "внутренняя сеть" : c.country ? `${flag(c.country)} ${countryName(c.country)}`.trim() : "страна не определена"
+
 /** How far back the server counts (ClientWindow in the engine), in minutes. */
 export const CLIENT_WINDOW_MIN = 10
 
