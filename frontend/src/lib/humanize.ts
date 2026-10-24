@@ -32,6 +32,12 @@ const rules: Rule[] = [
   { re: /^API Server listening on (.+)$/, kind: "info", text: (m) => `API слушает ${m[1]}` },
   { re: /^Starting Engine/, kind: "info", text: () => "Балансировщик запускается" },
   {
+    re: /^.+?: (\d+) new UDP sessions refused in the last minute: the limit of (\d+) sessions is reached$/,
+    kind: "warn",
+    notable: true,
+    text: (m) => `Достигнут предел UDP-сессий (${m[2]}): за минуту отброшено ${m[1]} новых клиентов. Для DNS включите режим «DNS-сервер»`,
+  },
+  {
     re: /^.+?: (\d+) connections refused by the access rules in the last .+?; most from: (.+)$/,
     kind: "warn",
     notable: true,

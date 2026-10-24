@@ -329,6 +329,8 @@ function AccessCard({ lb }: { lb: LoadBalancer }) {
                 <span className="w-44 flex-none truncate">
                   {t.country === "list" ? (
                     "Список запрещённых"
+                  ) : t.country === "limit" ? (
+                    "Предел UDP-сессий"
                   ) : (
                     <>
                       <span aria-hidden="true">{flag(t.country)}</span> {t.country ? countryName(t.country) : "страна не определена"}

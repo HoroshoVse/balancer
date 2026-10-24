@@ -92,6 +92,8 @@ type LoadBalancerInstance struct {
 	dialFails sync.Map // backend ID -> *failTracker
 
 	udpSessions sync.Map                // Map clientAddr(string) -> *udpSession
+	udpCount    atomic.Int64             // live UDP sessions, bounded by maxUDPSessions
+	udpDropped  atomic.Int64             // datagrams dropped for lack of room since the last report
 	dns         atomic.Pointer[dnsProxy] // set while serving in DNS mode
 	acmeIssuer  atomic.Pointer[certmagic.ACMEIssuer]
 }
@@ -521,6 +523,7 @@ func (l *LoadBalancerInstance) startUDP() error {
 	conn.SetReadBuffer(4 << 20) // absorb bursts instead of dropping datagrams
 	l.setState(statusRunning, "")
 	Logger.InfoLB(l.Config.Name, fmt.Sprintf("UDP LoadBalancer %s listening on %s", l.Config.Name, addr))
+	go l.reportUDPLimit()
 
 	idle := msOr(l.Config.IdleTimeout, udpSessionIdleTimeout)
 	sweep := min(max(idle/2, time.Second), 15*time.Second)
@@ -596,9 +599,13 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 		return
 	}
 
-	// Create new session
+	// Create new session, if there is room for it
+	if !l.reserveUDPSession() {
+		return
+	}
 	target := l.pickBackend(clientAddr.IP.String(), 0)
 	if target == nil {
+		l.udpCount.Add(-1)
 		Metrics.RecordRequest(l.Config.ID, 0, true)
 		return
 	}
@@ -608,6 +615,7 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	backendConn, err := net.Dial("udp", targetAddr)
 	if err != nil {
 		l.releaseBackend(target)
+		l.udpCount.Add(-1)
 		Metrics.RecordBackendRequest(target.ID, time.Since(start), true)
 		Metrics.RecordRequest(l.Config.ID, time.Since(start), true)
 		Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to connect to backend %s: %v", targetAddr, err))
@@ -632,26 +640,11 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	go l.relayUDPReplies(clientKey, sess, clientConn, clientAddr)
 }
 
-// relayUDPReplies forwards backend responses to the client until the session closes.
-func (l *LoadBalancerInstance) relayUDPReplies(clientKey string, sess *udpSession, clientConn *net.UDPConn, clientAddr *net.UDPAddr) {
-	defer l.closeUDPSession(clientKey, sess)
-	buf := make([]byte, 65535)
-	for {
-		n, err := sess.conn.Read(buf)
-		if err != nil {
-			return
-		}
-		atomic.StoreInt64(&sess.lastSeen, time.Now().Unix())
-		if _, err := clientConn.WriteToUDP(buf[:n], clientAddr); err != nil {
-			return
-		}
-	}
-}
-
 func (l *LoadBalancerInstance) closeUDPSession(clientKey string, sess *udpSession) {
 	sess.closeOnce.Do(func() {
 		sess.conn.Close()
 		l.releaseBackend(sess.backend)
+		l.udpCount.Add(-1)
 	})
 	l.udpSessions.CompareAndDelete(clientKey, sess)
 }
