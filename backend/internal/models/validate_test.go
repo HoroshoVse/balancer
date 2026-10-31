@@ -79,6 +79,32 @@ func TestNormalizeDefaults(t *testing.T) {
 	}
 }
 
+func TestIPv6BackendAddress(t *testing.T) {
+	for _, address := range []string{"2001:db8::1", "[2001:db8::1]", " [2001:db8::1] "} {
+		t.Run(address, func(t *testing.T) {
+			lb := validLB()
+			lb.BackendGroup.Backends[0].Address = address
+			lb.Normalize()
+			if err := lb.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if got := lb.BackendGroup.Backends[0].Address; got != "2001:db8::1" {
+				t.Fatalf("normalized address %q, want a bare IPv6 host", got)
+			}
+		})
+	}
+	for _, address := range []string{"[2001:db8::1]:443", "[invalid]", "[2001:db8::1", "127.0.0.1:443", "node.example:443"} {
+		t.Run(address, func(t *testing.T) {
+			lb := validLB()
+			lb.BackendGroup.Backends[0].Address = address
+			lb.Normalize()
+			if err := lb.Validate(); err == nil {
+				t.Fatalf("invalid host %q accepted; port must be supplied separately", address)
+			}
+		})
+	}
+}
+
 func TestConflictsWith(t *testing.T) {
 	lb := func(proto, ip string, port int, h3 bool) *LoadBalancer {
 		return &LoadBalancer{Protocol: proto, ListenIP: ip, ListenPort: port, SSLEnabled: proto == "https", HTTP3Enabled: h3}

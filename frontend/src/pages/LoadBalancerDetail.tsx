@@ -219,7 +219,7 @@ function NodesTable({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void
   const runTest = async (node: BackendNode) => {
     const key = `${node.address}:${node.port}`
     setTests((t) => ({ ...t, [key]: "проверяю…" }))
-    const r = await testNode(node, lb.backend_http2_enabled)
+    const r = await testNode(node, lb)
     setTests((t) => ({ ...t, [key]: r.ok ? "отвечает" : "не отвечает" }))
     if (!r.ok) toast.error(r.logs.split("\n").filter(Boolean).slice(-2).join(" "))
   }
@@ -566,7 +566,7 @@ export default function LoadBalancerDetail() {
       return
     }
     setTesting(true)
-    const results = await Promise.all((lb.backend_group?.backends ?? []).filter((b) => b.enabled).map((b) => testNode(b, lb.backend_http2_enabled)))
+    const results = await Promise.all((lb.backend_group?.backends ?? []).filter((b) => b.enabled).map((b) => testNode(b, lb)))
     setTesting(false)
     const ok = results.filter((r) => r.ok).length
     const text = results.map((r) => `${r.node.name || r.node.address} — ${r.ok ? "отвечает" : "не отвечает"}`).join(", ")

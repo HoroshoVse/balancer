@@ -6,14 +6,21 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/balancer/backend/internal/engine"
+	"github.com/balancer/backend/internal/models"
 )
 
 type TestConnectionRequest struct {
-	Address      string `json:"address"`
-	Port         int    `json:"port"`
-	TLSEnabled   bool   `json:"tls_enabled"`
-	HTTP2Enabled bool   `json:"http2_enabled"`
+	Address              string `json:"address"`
+	Port                 int    `json:"port"`
+	TLSEnabled           bool   `json:"tls_enabled"`
+	HTTP2Enabled         bool   `json:"http2_enabled"`
+	SNI                  string `json:"sni"`
+	ProxyProtocolEnabled bool   `json:"proxy_protocol_enabled"`
+	ProxyProtocolVersion int    `json:"proxy_protocol_version"`
 }
 
 type TestConnectionResponse struct {
@@ -31,8 +38,16 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	req.Address = models.NormalizeBackendAddress(req.Address)
 	if req.Address == "" || req.Port < 1 || req.Port > 65535 {
 		http.Error(w, "address and a port between 1 and 65535 are required", http.StatusBadRequest)
+		return
+	}
+	if req.ProxyProtocolVersion == 0 {
+		req.ProxyProtocolVersion = 2
+	}
+	if req.ProxyProtocolEnabled && req.ProxyProtocolVersion != 1 && req.ProxyProtocolVersion != 2 {
+		http.Error(w, "proxy protocol version must be 1 or 2", http.StatusBadRequest)
 		return
 	}
 
@@ -49,11 +64,22 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 		s.respondJSON(w, TestConnectionResponse{Success: false, Logs: logs})
 		return
 	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	logs += fmt.Sprintf("✅ TCP Connection successful (took %v)\n", time.Since(start))
-	
+	logs += fmt.Sprintf("ℹ️ Connected from %s to %s.\n", conn.LocalAddr(), conn.RemoteAddr())
+
+	if req.ProxyProtocolEnabled {
+		if err := engine.WriteProxyHeader(conn, req.ProxyProtocolVersion, conn.LocalAddr(), conn.RemoteAddr()); err != nil {
+			logs += fmt.Sprintf("❌ PROXY protocol header failed: %v\n", err)
+			s.respondJSON(w, TestConnectionResponse{Success: false, Logs: logs})
+			return
+		}
+		logs += fmt.Sprintf("ℹ️ PROXY protocol v%d header sent; acceptance by the node is not verified.\n", req.ProxyProtocolVersion)
+	}
+
 	if !req.TLSEnabled {
-		conn.Close()
-		logs += "✅ Configuration complete (HTTP only).\n"
+		logs += "ℹ️ TCP reachability only: TLS, VLESS/REALITY authentication and VPN traffic were not tested.\n"
 		s.respondJSON(w, TestConnectionResponse{Success: true, Logs: logs})
 		return
 	}
@@ -61,7 +87,7 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 	// Step 2: TLS Handshake
 	logs += "Attempting TLS Handshake...\n"
 	start = time.Now()
-	
+
 	nextProtos := []string{"http/1.1"}
 	if req.HTTP2Enabled {
 		nextProtos = []string{"h2", "http/1.1"}
@@ -71,6 +97,10 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         nextProtos,
+		ServerName:         strings.TrimSpace(req.SNI),
+	}
+	if tlsConfig.ServerName == "" {
+		tlsConfig.ServerName = req.Address
 	}
 
 	tlsConn := tls.Client(conn, tlsConfig)
@@ -88,14 +118,14 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 	state := tlsConn.ConnectionState()
 	logs += fmt.Sprintf("✅ TLS Handshake successful (took %v)\n", time.Since(start))
 	logs += fmt.Sprintf("ℹ️ Negotiated Protocol (ALPN): %s\n", state.NegotiatedProtocol)
-	
+
 	if req.HTTP2Enabled && state.NegotiatedProtocol != "h2" {
 		logs += "⚠️ Warning: HTTP/2 was requested, but backend negotiated " + state.NegotiatedProtocol + "\n"
 	}
 
 	tlsConn.Close()
-	logs += "✅ Configuration complete.\n"
-	
+	logs += "ℹ️ TLS reachability only: VLESS/REALITY authentication and VPN traffic were not tested.\n"
+
 	s.respondJSON(w, TestConnectionResponse{Success: true, Logs: logs})
 }
 

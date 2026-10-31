@@ -139,7 +139,7 @@ function Card({ lb, rps, history, onChanged, onDelete }: { lb: LoadBalancer; rps
       return
     }
     setTesting(true)
-    const results = await Promise.all((lb.backend_group?.backends ?? []).filter((b) => b.enabled).map((b) => testNode(b, lb.backend_http2_enabled)))
+    const results = await Promise.all((lb.backend_group?.backends ?? []).filter((b) => b.enabled).map((b) => testNode(b, lb)))
     setTesting(false)
     const ok = results.filter((r) => r.ok).length
     const text = results.map((r) => `${r.node.name || r.node.address} — ${r.ok ? "отвечает" : "не отвечает"}`).join(", ")

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 )
 
@@ -90,7 +91,7 @@ func (lb *LoadBalancer) Normalize() {
 	for i := range lb.BackendGroup.Backends {
 		b := &lb.BackendGroup.Backends[i]
 		b.Position = i
-		b.Address = strings.TrimSpace(b.Address)
+		b.Address = NormalizeBackendAddress(b.Address)
 		b.Name = strings.TrimSpace(b.Name)
 		if b.Name == "" {
 			b.Name = b.Address
@@ -189,8 +190,13 @@ func (b *BackendServer) validate() error {
 	if b.Address == "" {
 		return errors.New("address is required")
 	}
-	if strings.ContainsAny(b.Address, " /") {
+	if strings.ContainsAny(b.Address, " /\t\r\n") {
 		return fmt.Errorf("address %q must be an IP or hostname without scheme or path", b.Address)
+	}
+	if strings.ContainsAny(b.Address, "[]:") {
+		if _, err := netip.ParseAddr(b.Address); err != nil {
+			return fmt.Errorf("address %q must be a valid IPv6 address or a hostname without a port; set the port separately", b.Address)
+		}
 	}
 	if b.Port < 1 || b.Port > 65535 {
 		return errors.New("port must be between 1 and 65535")

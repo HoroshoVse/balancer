@@ -25,6 +25,7 @@ import {
 } from "@/lib/builderModel"
 import { backupQueue, kindLabel, type Kind } from "@/lib/lbModel"
 import { useLBs } from "@/lib/lbs"
+import { testNode } from "@/lib/lbActions"
 import { blankNode, recipeList, type Check } from "@/lib/recipes"
 import { cn } from "@/lib/utils"
 import { across, shareWidth, useMeasured, type FlowPath } from "@/lib/flow"
@@ -162,9 +163,10 @@ function PreviewFlow({ form, queue }: { form: BuilderForm; queue: Map<BackendNod
 }
 
 function NodeRow({
-  node, index, count, backupLabel, kind, check, open, onToggle, onChange, onMove, onRemove,
+  node, index, count, backupLabel, kind, check, testOptions, open, onToggle, onChange, onMove, onRemove,
 }: {
   node: NodeForm; index: number; count: number; backupLabel: string; kind: Kind; check: Check; open: boolean
+  testOptions: Pick<BuilderForm, "backend_http2_enabled" | "proxy_protocol_enabled" | "proxy_protocol_version">
   onToggle: () => void; onChange: (patch: Partial<NodeForm>) => void; onMove: (by: -1 | 1) => void; onRemove: () => void
 }) {
   const [test, setTest] = useState("")
@@ -175,7 +177,7 @@ function NodeRow({
     }
     setTest("Проверяю…")
     try {
-      const res = await api<{ logs: string }>("/tools/test-connection", { method: "POST", json: { address: node.address, port: Number(node.port), tls_enabled: node.tls_enabled, http2_enabled: false } })
+      const res = await testNode(node, testOptions)
       setTest(res.logs)
     } catch (err) {
       setTest(errorMessage(err))
@@ -208,6 +210,7 @@ function NodeRow({
             value={node.address}
             onChange={(e) => onChange({ address: e.target.value })}
             placeholder="IP или домен"
+            title="IPv4, IPv6 или домен. Порт укажите в соседнем поле."
             aria-invalid={!String(node.address).trim()}
             className={`${smallField} font-mono ${String(node.address).trim() ? "" : "border-warn"}`}
           />
@@ -255,6 +258,9 @@ function NodeRow({
               </label>
             )}
           </div>
+          {!terminatesHTTP(kind) && !isDatagram(kind) && (
+            <p className="text-xs text-ink-3">Для VLESS/REALITY и готового TLS-трафика оставьте «К узлу по TLS» выключенным: шифрование уже выполняет клиент.</p>
+          )}
           {check !== "none" && (
             <div className="flex flex-wrap gap-4 border-t border-line-soft pt-4">
               <label className="flex min-w-[120px] flex-1 flex-col gap-1.5 text-[13px] text-ink-2">
@@ -632,6 +638,7 @@ export default function Builder() {
                 backupLabel={form.backup_mode === "ordered" && queue.has(n) ? `резерв ${queue.get(n)}` : "резерв"}
                 kind={form.kind}
                 check={form.check}
+                testOptions={form}
                 open={openNode === n.key}
                 onToggle={() => setOpenNode((cur) => (cur === n.key ? null : n.key))}
                 onChange={(patch) => setNode(n.key, patch)}

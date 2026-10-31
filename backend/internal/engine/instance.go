@@ -86,14 +86,14 @@ type LoadBalancerInstance struct {
 	renewAlerted  sync.Map     // domain -> true after a failed certificate renewal was reported
 	notify        func(string) // sends an alert; defaults to Telegram
 
-	access  *accessPolicy // who may connect; nil when everyone may
+	access  *accessPolicy  // who may connect; nil when everyone may
 	clients *clientTracker // every client counted, shared with the balancer's metrics so it outlives a restart
 	domains *domainTracker // names asked for by DNS queries, and by whom, likewise
 
 	ejected   sync.Map // backend ID -> unix nanos until which new connections avoid it (see dial.go)
 	dialFails sync.Map // backend ID -> *failTracker
 
-	udpSessions sync.Map                // Map clientAddr(string) -> *udpSession
+	udpSessions sync.Map                 // Map clientAddr(string) -> *udpSession
 	udpCount    atomic.Int64             // live UDP sessions, bounded by maxUDPSessions
 	udpDropped  atomic.Int64             // datagrams dropped for lack of room since the last report
 	dns         atomic.Pointer[dnsProxy] // set while serving in DNS mode
@@ -498,8 +498,7 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 
 	// The PROXY header goes first on the wire, before any TLS handshake
 	if l.Config.ProxyProtocolEnabled {
-		header := buildProxyHeader(l.Config.ProxyProtocolVersion, clientConn.RemoteAddr(), clientConn.LocalAddr())
-		if _, err := header.WriteTo(backendConn); err != nil {
+		if err := WriteProxyHeader(backendConn, l.Config.ProxyProtocolVersion, clientConn.RemoteAddr(), clientConn.LocalAddr()); err != nil {
 			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to write PROXY protocol header: %v", err))
 			return
 		}

@@ -4,12 +4,20 @@ import (
 	"net"
 	"strconv"
 
+	"github.com/balancer/backend/internal/models"
 	"github.com/pires/go-proxyproto"
 )
 
 // backendAddr formats host:port, bracketing IPv6 literals.
 func backendAddr(host string, port int) string {
-	return net.JoinHostPort(host, strconv.Itoa(port))
+	return net.JoinHostPort(models.NormalizeBackendAddress(host), strconv.Itoa(port))
+}
+
+// WriteProxyHeader sends the original connection addresses before any payload
+// or TLS handshake. Its family follows src, independently of conn's family.
+func WriteProxyHeader(conn net.Conn, version int, src, dst net.Addr) error {
+	_, err := buildProxyHeader(version, src, dst).WriteTo(conn)
+	return err
 }
 
 func addrParts(a net.Addr) (ip net.IP, port int, udp bool) {

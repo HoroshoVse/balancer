@@ -359,8 +359,7 @@ func (t *backendTransport) newTransport(serverName string) *http.Transport {
 		if t.proxyProtocolEnabled {
 			clientAddr, _ := ctx.Value(ctxKeyClientAddr).(string)
 			localAddr, _ := ctx.Value(http.LocalAddrContextKey).(net.Addr)
-			header := buildProxyHeader(t.proxyProtocolVersion, tcpAddrFromString(clientAddr), localAddr)
-			if _, err := header.WriteTo(conn); err != nil {
+			if err := WriteProxyHeader(conn, t.proxyProtocolVersion, tcpAddrFromString(clientAddr), localAddr); err != nil {
 				conn.Close()
 				return nil, err
 			}

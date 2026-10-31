@@ -26,8 +26,12 @@ type testEnv struct {
 }
 
 func newTestEnv(t *testing.T) *testEnv {
+	return newTestEnvDSN(t, "sqlite://"+filepath.Join(t.TempDir(), "test.db")+"?_pragma=foreign_keys(1)")
+}
+
+func newTestEnvDSN(t *testing.T, dsn string) *testEnv {
 	t.Setenv("ADMIN_PASSWORD", "admin-test-password")
-	database, err := db.InitDB("sqlite://" + filepath.Join(t.TempDir(), "test.db"))
+	database, err := db.InitDB(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

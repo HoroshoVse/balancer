@@ -77,7 +77,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/geo/settings", s.authed(models.RoleAdmin, s.updateGeoSettings))
 	mux.HandleFunc("/api/v1/geo/lookup", s.authed(models.RoleViewer, s.lookupGeo))
 	mux.HandleFunc("/api/v1/load-balancers/history", s.authed(models.RoleViewer, s.getLBMetricsHistory)) // Expected query param ?id=X
-	mux.HandleFunc("/api/v1/load-balancers/queries", s.authed(models.RoleViewer, s.getLBQueries)) // ?id=X
+	mux.HandleFunc("/api/v1/load-balancers/queries", s.authed(models.RoleViewer, s.getLBQueries))        // ?id=X
 	mux.HandleFunc("/api/v1/metrics/history", s.authed(models.RoleViewer, s.getGlobalMetricsHistory))
 	mux.HandleFunc("/api/v1/metrics/host", s.authed(models.RoleViewer, s.getHostMetrics))
 	mux.HandleFunc("/api/v1/logs", s.authed(models.RoleViewer, s.getLogs))
@@ -410,13 +410,25 @@ func (s *Server) deleteLoadBalancer(w http.ResponseWriter, r *http.Request) {
 		if lb.ID == 0 {
 			return &statusError{http.StatusNotFound, "Load balancer not found"}
 		}
+		// A soft delete leaves backend_group_id in the database and still
+		// prevents deleting the group. The API removes the configuration and
+		// its nodes permanently, so remove the referencing row first.
+		if err := tx.Unscoped().Delete(&lb).Error; err != nil {
+			return err
+		}
+		// Keep groups used by another balancer, including legacy soft-deleted
+		// rows, which still participate in foreign key constraints.
+		var references int64
+		if err := tx.Unscoped().Model(&models.LoadBalancer{}).Where("backend_group_id = ?", lb.BackendGroupID).Count(&references).Error; err != nil {
+			return err
+		}
+		if references > 0 {
+			return nil
+		}
 		if err := tx.Where("group_id = ?", lb.BackendGroupID).Delete(&models.BackendServer{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Delete(&models.BackendGroup{}, lb.BackendGroupID).Error; err != nil {
-			return err
-		}
-		return tx.Delete(&models.LoadBalancer{}, lb.ID).Error
+		return tx.Delete(&models.BackendGroup{}, lb.BackendGroupID).Error
 	})
 	if err != nil {
 		writeError(w, err)

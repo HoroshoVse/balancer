@@ -26,11 +26,18 @@ export interface NodeTest {
 }
 
 /** TCP (and TLS) reachability of a node from the balancer's host. */
-export async function testNode(node: BackendNode, http2 = false): Promise<NodeTest> {
+type NodeTestOptions = Pick<LoadBalancer, "backend_http2_enabled" | "proxy_protocol_enabled" | "proxy_protocol_version">
+
+export async function testNode(node: BackendNode, options: NodeTestOptions): Promise<NodeTest> {
   try {
     const res = await api<{ success: boolean; logs: string }>("/tools/test-connection", {
       method: "POST",
-      json: { address: node.address, port: Number(node.port), tls_enabled: node.tls_enabled, http2_enabled: http2 },
+      json: {
+        address: node.address, port: Number(node.port), tls_enabled: node.tls_enabled, sni: node.sni,
+        http2_enabled: options.backend_http2_enabled,
+        proxy_protocol_enabled: options.proxy_protocol_enabled,
+        proxy_protocol_version: options.proxy_protocol_version,
+      },
     })
     return { node, ok: res.success, logs: res.logs }
   } catch (err) {
