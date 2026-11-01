@@ -82,6 +82,20 @@ func (lb *LoadBalancer) normalizeAccess() {
 
 	lb.AccessAllow = normalizeList(lb.AccessAllow)
 	lb.AccessDeny = normalizeList(lb.AccessDeny)
+	lb.AccessAllowLists = uniqueIDs(lb.AccessAllowLists)
+	lb.AccessDenyLists = uniqueIDs(lb.AccessDenyLists)
+}
+
+func uniqueIDs(ids []uint) []uint {
+	seen := map[uint]bool{}
+	out := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // normalizeList writes each entry in its canonical form, one per line.
@@ -131,7 +145,17 @@ func (lb *LoadBalancer) validateAccess() error {
 			}
 		}
 	}
-	if lb.AccessMode == AccessOnly && len(codes) == 0 && lb.AccessAllow == "" {
+	for _, ids := range [][]uint{lb.AccessAllowLists, lb.AccessDenyLists} {
+		if len(ids) > 50 {
+			return errors.New("at most 50 address lists can be selected")
+		}
+		for _, id := range ids {
+			if id == 0 {
+				return errors.New("invalid address list id")
+			}
+		}
+	}
+	if lb.AccessMode == AccessOnly && len(codes) == 0 && lb.AccessAllow == "" && len(lb.AccessAllowLists) == 0 {
 		return errors.New("access limited to the listed countries, but no country or allowed address is listed: nobody could connect")
 	}
 	return nil

@@ -1,17 +1,17 @@
 package db
 
 import (
-	"time"
 	"crypto/rand"
 	"encoding/hex"
+	"github.com/balancer/backend/internal/models"
+	"github.com/glebarez/sqlite"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 	"log"
 	"os"
 	"strings"
-	"github.com/glebarez/sqlite"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	"golang.org/x/crypto/bcrypt"
-	"github.com/balancer/backend/internal/models"
+	"time"
 )
 
 // InitDB opens Postgres for postgres:// or host= DSNs and SQLite otherwise
@@ -41,6 +41,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 		&models.BackendServer{},
 		&models.User{},
 		&models.Settings{},
+		&models.AccessList{},
 	)
 
 	if err != nil {

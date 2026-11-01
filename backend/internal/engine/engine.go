@@ -9,17 +9,18 @@ import (
 )
 
 type Engine struct {
-	db             *gorm.DB
-	mu             sync.RWMutex
+	db              *gorm.DB
+	mu              sync.RWMutex
 	activeBalancers map[uint]*LoadBalancerInstance
-	healthChecker  *HealthChecker
+	healthChecker   *HealthChecker
+	accessLists     accessListCache
 }
 
 func NewEngine(db *gorm.DB) *Engine {
 	return &Engine{
-		db:             db,
+		db:              db,
 		activeBalancers: make(map[uint]*LoadBalancerInstance),
-		healthChecker:  NewHealthChecker(db),
+		healthChecker:   NewHealthChecker(db),
 	}
 }
 
@@ -43,6 +44,9 @@ func (e *Engine) Start() error {
 func (e *Engine) ReloadConfig() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := e.RefreshAccessLists(); err != nil {
+		return err
+	}
 
 	var lbs []models.LoadBalancer
 	if err := e.db.Preload("BackendGroup.Backends", models.OrderedBackends).Find(&lbs).Error; err != nil {
@@ -85,6 +89,9 @@ func (e *Engine) ReloadConfig() error {
 	// Phase 2: start
 	for _, lb := range toStart {
 		newInst := NewLoadBalancerInstance(lb, e.healthChecker)
+		if newInst.access != nil {
+			newInst.access.lists = &e.accessLists
+		}
 		e.activeBalancers[lb.ID] = newInst
 		go func(name string, instance *LoadBalancerInstance) {
 			if err := instance.Start(); err != nil {
@@ -112,7 +119,7 @@ func (e *Engine) LastTelegram() *TelegramDelivery {
 }
 
 func (e *Engine) GetHealthState(backendID uint) bool {
-    return e.healthChecker.IsHealthy(backendID)
+	return e.healthChecker.IsHealthy(backendID)
 }
 
 func (e *Engine) GetACMEStatus(lbID uint) (status, errStr string) {

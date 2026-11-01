@@ -5,6 +5,7 @@ import { ApiError, api, errorMessage, isAdmin, setToken, tokenClaims } from "@/l
 import { plural, roleLabel } from "@/lib/lbModel"
 import { usePoll } from "@/lib/usePoll"
 import { Switch } from "@/components/Switch"
+import { AccessLists } from "@/components/AccessLists"
 import { GeoDatabase } from "@/components/GeoDatabase"
 
 interface TelegramDelivery {
@@ -351,6 +352,7 @@ function Access({ onPasswordChanged }: { onPasswordChanged: () => void }) {
           </div>
         ))}
       </div>
+      <AccessLists />
       <ChangePassword onChanged={onPasswordChanged} />
       <div className="flex flex-col gap-2 border-t border-ground pt-5">
         <span className="text-sm text-ink-2">Пользователей добавляют и меняют на сервере:</span>

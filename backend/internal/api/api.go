@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/balancer/backend/internal/accesslists"
 	"github.com/balancer/backend/internal/db"
 	"github.com/balancer/backend/internal/engine"
 	"github.com/balancer/backend/internal/geo"
@@ -21,13 +22,14 @@ import (
 )
 
 type Server struct {
-	db        *gorm.DB
-	engine    *engine.Engine
-	jwtSecret []byte
-	limiter   *loginLimiter
-	dummyHash []byte // compared against when the user doesn't exist, to keep timing uniform
-	info      SystemInfo
-	geo       *geo.Manager
+	db          *gorm.DB
+	engine      *engine.Engine
+	jwtSecret   []byte
+	limiter     *loginLimiter
+	dummyHash   []byte // compared against when the user doesn't exist, to keep timing uniform
+	info        SystemInfo
+	geo         *geo.Manager
+	accessLists *accesslists.Manager
 }
 
 // SystemInfo describes how this instance runs, for the security checklist in the UI.
@@ -44,11 +46,12 @@ func (s *Server) SetInfo(info SystemInfo) {
 
 func NewServer(db *gorm.DB, eng *engine.Engine, jwtSecret []byte) *Server {
 	return &Server{
-		db:        db,
-		engine:    eng,
-		jwtSecret: jwtSecret,
-		limiter:   newLoginLimiter(),
-		dummyHash: mustDummyHash(),
+		db:          db,
+		engine:      eng,
+		jwtSecret:   jwtSecret,
+		limiter:     newLoginLimiter(),
+		accessLists: accesslists.New(db, eng.RefreshAccessLists),
+		dummyHash:   mustDummyHash(),
 	}
 }
 
@@ -76,6 +79,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/geo/update", s.authed(models.RoleAdmin, s.updateGeo))
 	mux.HandleFunc("/api/v1/geo/settings", s.authed(models.RoleAdmin, s.updateGeoSettings))
 	mux.HandleFunc("/api/v1/geo/lookup", s.authed(models.RoleViewer, s.lookupGeo))
+	mux.HandleFunc("/api/v1/access-lists", s.authed(models.RoleViewer, s.handleAccessLists))
+	mux.HandleFunc("/api/v1/access-lists/refresh", s.authed(models.RoleOperator, s.refreshAccessList))
+	mux.HandleFunc("/api/v1/access-lists/delete", s.authed(models.RoleOperator, s.deleteAccessList))
 	mux.HandleFunc("/api/v1/load-balancers/history", s.authed(models.RoleViewer, s.getLBMetricsHistory)) // Expected query param ?id=X
 	mux.HandleFunc("/api/v1/load-balancers/queries", s.authed(models.RoleViewer, s.getLBQueries))        // ?id=X
 	mux.HandleFunc("/api/v1/metrics/history", s.authed(models.RoleViewer, s.getGlobalMetricsHistory))
@@ -90,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 
 // Start serves the API until ctx is cancelled, then shuts down gracefully.
 func (s *Server) Start(ctx context.Context, addr string) error {
+	go s.accessLists.Run(ctx)
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           s.Handler(),
@@ -120,7 +127,11 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	return decodeJSONLimit(w, r, v, 1<<20)
+}
+
+func decodeJSONLimit(w http.ResponseWriter, r *http.Request, v interface{}, limit int64) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return false
@@ -146,6 +157,17 @@ type statusError struct {
 func (e *statusError) Error() string { return e.msg }
 
 func writeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, accesslists.ErrInvalid):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	case errors.Is(err, accesslists.ErrNotFound):
+		http.Error(w, "Список не найден", http.StatusNotFound)
+		return
+	case errors.Is(err, accesslists.ErrInUse):
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	var se *statusError
 	if errors.As(err, &se) {
 		http.Error(w, se.msg, se.status)
@@ -377,7 +399,12 @@ func (s *Server) createLoadBalancer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	unlock := s.accessLists.LockConfig()
+	defer unlock()
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := accesslists.ValidateReferences(tx, &lb); err != nil {
+			return err
+		}
 		if err := checkPortConflict(tx, &lb); err != nil {
 			return err
 		}
@@ -453,7 +480,12 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	unlock := s.accessLists.LockConfig()
+	defer unlock()
 	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := accesslists.ValidateReferences(tx, &input); err != nil {
+			return err
+		}
 		var existing models.LoadBalancer
 		if err := tx.Preload("BackendGroup.Backends", models.OrderedBackends).Limit(1).Find(&existing, input.ID).Error; err != nil {
 			return err
@@ -500,6 +532,8 @@ func (s *Server) updateLoadBalancer(w http.ResponseWriter, r *http.Request) {
 		existing.AccessCountries = input.AccessCountries
 		existing.AccessAllow = input.AccessAllow
 		existing.AccessDeny = input.AccessDeny
+		existing.AccessAllowLists = input.AccessAllowLists
+		existing.AccessDenyLists = input.AccessDenyLists
 
 		// Update backend group
 		existing.BackendGroup.Name = input.BackendGroup.Name

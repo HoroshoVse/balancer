@@ -50,9 +50,11 @@ interface AccessRules {
   access_countries?: string
   access_allow?: string
   access_deny?: string
+  access_allow_lists?: number[]
+  access_deny_lists?: number[]
 }
 
-const hasLists = (lb: AccessRules) => !!(lb.access_allow?.trim() || lb.access_deny?.trim())
+const hasLists = (lb: AccessRules) => !!(lb.access_allow?.trim() || lb.access_deny?.trim() || lb.access_allow_lists?.length || lb.access_deny_lists?.length)
 
 /** A short label for a balancer card: "только RU, BY", "без US, HK", "списки адресов". */
 export function accessTag(lb: AccessRules): string | null {
@@ -60,6 +62,7 @@ export function accessTag(lb: AccessRules): string | null {
   const short = codes.length > 3 ? `${codes.slice(0, 3).join(", ")} +${codes.length - 3}` : codes.join(", ")
   if (lb.access_mode === "allow" && codes.length) return `только ${short}`
   if (lb.access_mode === "deny" && codes.length) return `без ${short}`
+  if (lb.access_mode === "allow") return "только разрешённые IP"
   return hasLists(lb) ? "списки адресов" : null
 }
 
@@ -69,9 +72,12 @@ export function accessText(lb: AccessRules): string {
   let text = "всем"
   if (lb.access_mode === "allow" && codes.length) text = `только из: ${countryList(codes, 4)}`
   else if (lb.access_mode === "deny" && codes.length) text = `из всех, кроме: ${countryList(codes, 4)}`
+  if (lb.access_mode === "allow" && !codes.length) text = "только разрешённые IP и подсети"
   const extra: string[] = []
   const count = (list?: string) => (list ?? "").split(/[\s,;]+/).filter(Boolean).length
   if (count(lb.access_allow)) extra.push(`всегда пускать ${count(lb.access_allow)}`)
   if (count(lb.access_deny)) extra.push(`всегда блокировать ${count(lb.access_deny)}`)
+  if (lb.access_allow_lists?.length) extra.push(`разрешённых списков: ${lb.access_allow_lists.length}`)
+  if (lb.access_deny_lists?.length) extra.push(`запрещённых списков: ${lb.access_deny_lists.length}`)
   return extra.length ? `${text}; ${extra.join(", ")}` : text
 }

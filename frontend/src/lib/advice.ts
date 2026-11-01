@@ -68,7 +68,7 @@ export function adviceFor(lb: LoadBalancer): Advice[] {
   }
 
   // A private listen address proves nothing: hosters often map a public IP onto it
-  if ((kind === "dns" || (kind === "udp" && lb.listen_port === 53)) && !lb.access_mode && !lb.access_deny?.trim()) {
+  if ((kind === "dns" || (kind === "udp" && lb.listen_port === 53)) && !lb.access_mode && !lb.access_deny?.trim() && !lb.access_deny_lists?.length) {
     out.push({
       id: "open-dns",
       tone: "info",

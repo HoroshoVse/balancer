@@ -9,8 +9,9 @@ import (
 func TestNormalizeAccess(t *testing.T) {
 	lb := LoadBalancer{
 		Name: "x", AccessMode: " ALLOW ", AccessCountries: "ru, by;RU\nkz",
-		AccessAllow: "203.0.113.7  203.0.113.0/24,\n2001:DB8::/32 1.2.3.4/24 203.0.113.7",
-		AccessDeny:  "::ffff:198.51.100.5",
+		AccessAllow:      "203.0.113.7  203.0.113.0/24,\n2001:DB8::/32 1.2.3.4/24 203.0.113.7",
+		AccessDeny:       "::ffff:198.51.100.5",
+		AccessAllowLists: []uint{7, 7, 3},
 	}
 	lb.Normalize()
 	if lb.AccessMode != AccessOnly || lb.AccessCountries != "BY,KZ,RU" {
@@ -21,6 +22,9 @@ func TestNormalizeAccess(t *testing.T) {
 	}
 	if lb.AccessDeny != "198.51.100.5" {
 		t.Fatalf("deny list %q", lb.AccessDeny)
+	}
+	if len(lb.AccessAllowLists) != 2 || lb.AccessAllowLists[0] != 7 || lb.AccessAllowLists[1] != 3 {
+		t.Fatalf("list references were not deduplicated: %v", lb.AccessAllowLists)
 	}
 	again := lb
 	again.Normalize()
@@ -54,8 +58,9 @@ func TestValidateAccess(t *testing.T) {
 		func(lb *LoadBalancer) {},
 		func(lb *LoadBalancer) { lb.AccessMode, lb.AccessCountries = "allow", "RU,BY" },
 		func(lb *LoadBalancer) { lb.AccessMode, lb.AccessAllow = "allow", "203.0.113.0/24" }, // addresses only
-		func(lb *LoadBalancer) { lb.AccessMode = "deny" },                                    // nobody listed: no effect
-		func(lb *LoadBalancer) { lb.AccessCountries = "US" },                                 // kept for later
+		func(lb *LoadBalancer) { lb.AccessMode, lb.AccessAllowLists = "allow", []uint{1} },
+		func(lb *LoadBalancer) { lb.AccessMode = "deny" },    // nobody listed: no effect
+		func(lb *LoadBalancer) { lb.AccessCountries = "US" }, // kept for later
 	}
 	for i, m := range ok {
 		if err := valid(m); err != nil {
@@ -63,13 +68,14 @@ func TestValidateAccess(t *testing.T) {
 		}
 	}
 	bad := map[string]func(*LoadBalancer){
-		"nobody could connect": func(lb *LoadBalancer) { lb.AccessMode = "allow" },
-		"unknown access mode":  func(lb *LoadBalancer) { lb.AccessMode = "block" },
-		"two-letter":           func(lb *LoadBalancer) { lb.AccessMode, lb.AccessCountries = "deny", "RUS" },
-		`"R1" is not`:          func(lb *LoadBalancer) { lb.AccessMode, lb.AccessCountries = "deny", "R1" },
-		"allow list":           func(lb *LoadBalancer) { lb.AccessAllow = "10.0.0.256" },
-		"deny list":            func(lb *LoadBalancer) { lb.AccessDeny = "1.2.3.4/33" },
-		"more than":            func(lb *LoadBalancer) { lb.AccessDeny = manyAddresses(6000) },
+		"nobody could connect":    func(lb *LoadBalancer) { lb.AccessMode = "allow" },
+		"unknown access mode":     func(lb *LoadBalancer) { lb.AccessMode = "block" },
+		"two-letter":              func(lb *LoadBalancer) { lb.AccessMode, lb.AccessCountries = "deny", "RUS" },
+		`"R1" is not`:             func(lb *LoadBalancer) { lb.AccessMode, lb.AccessCountries = "deny", "R1" },
+		"allow list":              func(lb *LoadBalancer) { lb.AccessAllow = "10.0.0.256" },
+		"deny list":               func(lb *LoadBalancer) { lb.AccessDeny = "1.2.3.4/33" },
+		"more than":               func(lb *LoadBalancer) { lb.AccessDeny = manyAddresses(6000) },
+		"invalid address list id": func(lb *LoadBalancer) { lb.AccessDenyLists = []uint{0} },
 	}
 	for want, m := range bad {
 		if err := valid(m); err == nil || !strings.Contains(err.Error(), want) {

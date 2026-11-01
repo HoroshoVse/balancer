@@ -62,6 +62,8 @@ export interface LoadBalancer {
   access_mode?: "" | "allow" | "deny"
   access_countries?: string // "RU,BY"
   access_allow?: string // always let through: addresses and subnets, one per line
+  access_allow_lists?: number[]
+  access_deny_lists?: number[]
   access_deny?: string // always refuse
   status?: string
   status_error?: string

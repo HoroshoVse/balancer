@@ -60,13 +60,17 @@ type accessPolicy struct {
 	blocks    *blockLog
 	lastNoDB  atomic.Int64 // unix seconds of the last "database missing" warning
 	name      string
+	lists     *accessListCache
+	allowIDs  []uint
+	denyIDs   []uint
 }
 
 func newAccessPolicy(lb models.LoadBalancer) *accessPolicy {
-	if lb.AccessMode == models.AccessEveryone && lb.AccessAllow == "" && lb.AccessDeny == "" {
+	if lb.AccessMode == models.AccessEveryone && lb.AccessAllow == "" && lb.AccessDeny == "" && len(lb.AccessAllowLists) == 0 && len(lb.AccessDenyLists) == 0 {
 		return nil
 	}
 	p := &accessPolicy{mode: lb.AccessMode, countries: map[string]bool{}, name: lb.Name, blocks: newBlockLog()}
+	p.allowIDs, p.denyIDs = lb.AccessAllowLists, lb.AccessDenyLists
 	for _, c := range models.ParseCountries(lb.AccessCountries) {
 		p.countries[c] = true
 	}
@@ -84,10 +88,19 @@ func isInternal(a netip.Addr) bool {
 
 func (p *accessPolicy) decide(a netip.Addr) AccessDecision {
 	a = a.Unmap()
+	// One immutable snapshot for the entire decision, including both allow
+	// and deny lists, even while a download is being applied.
+	lists := p.lists.snapshot()
 	if rule, ok := p.allow.match(a); ok {
 		return AccessDecision{Allowed: true, Reason: ReasonAllowList, Rule: rule}
 	}
+	if rule, ok := matchAccessLists(lists, p.allowIDs, a); ok {
+		return AccessDecision{Allowed: true, Reason: ReasonAllowList, Rule: rule}
+	}
 	if rule, ok := p.deny.match(a); ok {
+		return AccessDecision{Allowed: false, Reason: ReasonDenyList, Rule: rule}
+	}
+	if rule, ok := matchAccessLists(lists, p.denyIDs, a); ok {
 		return AccessDecision{Allowed: false, Reason: ReasonDenyList, Rule: rule}
 	}
 	if isInternal(a) {
@@ -95,6 +108,9 @@ func (p *accessPolicy) decide(a netip.Addr) AccessDecision {
 	}
 	if p.mode == models.AccessEveryone {
 		return AccessDecision{Allowed: true, Reason: ReasonNoRules}
+	}
+	if p.mode == models.AccessOnly && len(p.countries) == 0 {
+		return AccessDecision{Allowed: false, Reason: ReasonCountryDenied}
 	}
 	var cc string
 	loaded := false

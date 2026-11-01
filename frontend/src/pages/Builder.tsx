@@ -5,6 +5,7 @@ import { Check as CheckIcon, ChevronDown, ChevronUp, Plus, TriangleAlert, X } fr
 import { api, canEdit, errorMessage } from "@/lib/api"
 import { countryList, countryName } from "@/lib/countries"
 import { usePoll } from "@/lib/usePoll"
+import { AccessListPicker } from "@/components/AccessLists"
 import { CountryPicker } from "@/components/CountryPicker"
 import {
   applyCheck,
@@ -303,8 +304,8 @@ const levelStyle: Record<Preflight["level"], { box: string; dot: string; mark: R
 }
 
 const accessModes: { value: BuilderForm["access_mode"]; label: string; hint: string }[] = [
-  { value: "", label: "Всем", hint: "без ограничений" },
-  { value: "allow", label: "Только из выбранных стран", hint: "остальным не отвечаем" },
+  { value: "", label: "Всем", hint: "с учётом разрешённых и запрещённых адресов" },
+  { value: "allow", label: "Только выбранные страны и разрешённые адреса", hint: "можно ограничить доступ только списками IP, без выбора стран" },
   { value: "deny", label: "Из всех стран, кроме выбранных", hint: "выбранным не отвечаем" },
 ]
 
@@ -354,7 +355,9 @@ function AccessPanel({ form, set, geo, balancerId }: { form: BuilderForm; set: <
             presets={form.access_mode === "allow" ? [{ label: "Только Россия", codes: ["RU"] }] : []}
           />
           <p className="text-[13px] leading-snug text-ink-3">
-            {geo?.loaded
+            {form.access_countries.length === 0
+              ? "Страны можно не выбирать. В режиме «Только выбранные страны и разрешённые адреса» тогда подключатся только разрешённые IP и подсети."
+              : geo?.loaded
               ? `Страна — по данным региональных регистраторов (RIPE, ARIN, APNIC, LACNIC, AFRINIC), обновлено ${geo.updated_at ? new Date(geo.updated_at).toLocaleDateString("ru-RU") : "—"}. Это страна, где зарегистрирована сеть, а не обязательно где стоит сервер.`
               : geo?.updating
                 ? "База стран сейчас скачивается: при первой загрузке это занимает несколько минут. Пока её нет, фильтр по странам пропускает всех."
@@ -364,16 +367,22 @@ function AccessPanel({ form, set, geo, balancerId }: { form: BuilderForm; set: <
       )}
 
       <div className="flex w-full flex-wrap gap-4">
-        <label className="flex min-w-[240px] flex-1 flex-col gap-1.5 text-[13px] text-ink-2">
-          Всегда пускать (IP и подсети)
-          <textarea value={form.access_allow} onChange={(e) => set("access_allow", e.target.value)} placeholder={"203.0.113.7\n198.51.100.0/24"} className="min-h-[88px] rounded-lg border border-line p-3 font-mono text-xs outline-none focus:border-cobalt" />
-          <span className="text-xs text-ink-3">Главнее стран. По одному в строке. Внутренние адреса (10.x, 192.168.x, 127.x) пускаются всегда.</span>
-        </label>
-        <label className="flex min-w-[240px] flex-1 flex-col gap-1.5 text-[13px] text-ink-2">
-          Всегда блокировать (IP и подсети)
-          <textarea value={form.access_deny} onChange={(e) => set("access_deny", e.target.value)} placeholder={"103.54.46.15\n91.204.224.0/22"} className="min-h-[88px] rounded-lg border border-line p-3 font-mono text-xs outline-none focus:border-cobalt" />
-          <span className="text-xs text-ink-3">Работает и без выбора стран, например против одной сети-источника атаки.</span>
-        </label>
+        <div className="flex min-w-[240px] flex-1 flex-col gap-3">
+          <label className="flex flex-col gap-1.5 text-[13px] text-ink-2">
+            Всегда пускать (IP и подсети)
+            <textarea value={form.access_allow} onChange={(e) => set("access_allow", e.target.value)} placeholder={"203.0.113.7\n198.51.100.0/24"} className="min-h-[88px] rounded-lg border border-line p-3 font-mono text-xs outline-none focus:border-cobalt" />
+            <span className="text-xs text-ink-3">По одному в строке. Разрешения главнее блокировок и стран.</span>
+          </label>
+          <AccessListPicker label="Разрешённые списки" value={form.access_allow_lists} onChange={(ids) => set("access_allow_lists", ids)} />
+        </div>
+        <div className="flex min-w-[240px] flex-1 flex-col gap-3">
+          <label className="flex flex-col gap-1.5 text-[13px] text-ink-2">
+            Всегда блокировать (IP и подсети)
+            <textarea value={form.access_deny} onChange={(e) => set("access_deny", e.target.value)} placeholder={"103.54.46.15\n91.204.224.0/22"} className="min-h-[88px] rounded-lg border border-line p-3 font-mono text-xs outline-none focus:border-cobalt" />
+            <span className="text-xs text-ink-3">Работает и без выбора стран, например против одной сети-источника атаки.</span>
+          </label>
+          <AccessListPicker label="Запрещённые списки" value={form.access_deny_lists} onChange={(ids) => set("access_deny_lists", ids)} />
+        </div>
       </div>
 
       <div className="flex w-full flex-col gap-2">
@@ -464,10 +473,10 @@ export default function Builder() {
 
   const accessSummary =
     form.access_mode === "allow"
-      ? `только ${form.access_countries.length ? countryList(form.access_countries, 2) : "…"}`
+      ? form.access_countries.length ? `только ${countryList(form.access_countries, 2)}` : "только разрешённые IP"
       : form.access_mode === "deny"
         ? `кроме ${form.access_countries.length ? countryList(form.access_countries, 2) : "…"}`
-        : form.access_deny.trim() || form.access_allow.trim()
+        : form.access_deny.trim() || form.access_allow.trim() || form.access_allow_lists.length || form.access_deny_lists.length
           ? "свои списки"
           : "всем"
 

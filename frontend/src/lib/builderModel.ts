@@ -39,6 +39,8 @@ export interface BuilderForm {
   access_countries: string[]
   access_allow: string
   access_deny: string
+  access_allow_lists: number[]
+  access_deny_lists: number[]
   nodes: NodeForm[]
 }
 
@@ -100,6 +102,8 @@ export function fromRecipe(r: Recipe): BuilderForm {
     access_countries: [],
     access_allow: "",
     access_deny: "",
+    access_allow_lists: [],
+    access_deny_lists: [],
     nodes: applyCheck(r.nodes.map(withKey), r.check, "10"),
   }
 }
@@ -140,6 +144,8 @@ export function fromLB(lb: LoadBalancer): BuilderForm {
     access_countries: splitCodes(lb.access_countries),
     access_allow: lb.access_allow ?? "",
     access_deny: lb.access_deny ?? "",
+    access_allow_lists: lb.access_allow_lists ?? [],
+    access_deny_lists: lb.access_deny_lists ?? [],
     nodes: nodes.length ? nodes : [withKey(blankNode({ port: lb.listen_port }))],
   }
 }
@@ -209,6 +215,8 @@ export function toPayload(f: BuilderForm, id?: number): Record<string, unknown> 
     access_countries: f.access_countries.join(","),
     access_allow: f.access_allow.trim(),
     access_deny: f.access_deny.trim(),
+    access_allow_lists: f.access_allow_lists,
+    access_deny_lists: f.access_deny_lists,
     backend_group: {
       name: `${name} Group`,
       backends: applyCheck(f.nodes, f.check, f.interval).map(({ key: _key, status: _status, metrics: _metrics, ...b }) => ({
@@ -311,14 +319,14 @@ export function preflight(f: BuilderForm, lbs: LoadBalancer[], editingId?: numbe
     out.push({ level: "warn", text: "AdGuard Home не понимает PROXY protocol — для его узлов выключите.", fix: { label: "Выключить PROXY", apply: (x) => ({ ...x, proxy_protocol_enabled: false }) } })
   }
 
-  if (f.access_mode === "allow" && f.access_countries.length === 0 && !f.access_allow.trim()) {
-    out.push({ level: "error", text: "Выбран доступ только из выбранных стран, но ни одной страны нет — не подключится никто.", fix: { label: "Выбрать страны", open: "access" } })
-  } else if (f.access_mode !== "" && f.access_countries.length === 0 && !f.access_allow.trim() && !f.access_deny.trim()) {
+  if (f.access_mode === "allow" && f.access_countries.length === 0 && !f.access_allow.trim() && f.access_allow_lists.length === 0) {
+    out.push({ level: "error", text: "Выбран доступ только из выбранных стран, но нет ни стран, ни разрешённых IP или списков.", fix: { label: "Выбрать страны", open: "access" } })
+  } else if (f.access_mode !== "" && f.access_countries.length === 0 && !f.access_allow.trim() && f.access_allow_lists.length === 0 && !f.access_deny.trim() && f.access_deny_lists.length === 0) {
     out.push({ level: "warn", text: "Режим доступа выбран, но страны не указаны — ограничение ничего не изменит.", fix: { label: "Выбрать страны", open: "access" } })
-  } else if (f.access_mode !== "" && !geoLoaded) {
+  } else if (f.access_mode !== "" && f.access_countries.length > 0 && !geoLoaded) {
     out.push({ level: "warn", text: "База стран ещё не загружена — пока она качается, фильтр по странам пропускает всех.", fix: { label: "Открыть базы", open: "access" } })
   } else if (f.access_mode === "allow") {
-    out.push({ level: "ok", text: `Подключаться смогут только из: ${countryList(f.access_countries)}${f.access_allow.trim() ? " и с разрешённых адресов" : ""}.` })
+    out.push({ level: "ok", text: f.access_countries.length ? `Подключаться смогут только из: ${countryList(f.access_countries)}${f.access_allow.trim() || f.access_allow_lists.length ? " и с разрешённых адресов" : ""}.` : "Подключаться смогут только разрешённые IP и подсети, включая выбранные списки." })
   } else if (f.access_mode === "deny" && f.access_countries.length > 0) {
     out.push({ level: "ok", text: `Из этих стран подключиться нельзя: ${countryList(f.access_countries)}.` })
   }
@@ -356,6 +364,8 @@ export function describe(f: BuilderForm): string {
   if (hasTLS(f.kind) && f.http_redirect) s += " Запросы на 80-й порт переадресуются на HTTPS."
   if (f.access_mode === "allow" && f.access_countries.length) s += ` Принимает только из: ${countryList(f.access_countries)}; остальным не отвечает.`
   else if (f.access_mode === "deny" && f.access_countries.length) s += ` Не принимает из: ${countryList(f.access_countries)}.`
+  if (f.access_mode === "allow" && !f.access_countries.length) s += " Принимает только разрешённые IP и подсети."
+  if (f.access_allow_lists.length || f.access_deny_lists.length) s += ` Подключены списки адресов: ${f.access_allow_lists.length} разрешённых, ${f.access_deny_lists.length} запрещённых.`
   return s
 }
 

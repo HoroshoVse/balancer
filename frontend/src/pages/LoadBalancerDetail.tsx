@@ -312,7 +312,7 @@ function NodesTable({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void
 function ClientsCard({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void }) {
   const editable = canEdit()
   // Rules exist: what matters is who is being refused. Without rules nothing is, so show everyone.
-  const ruled = !!(lb.access_mode || lb.access_allow?.trim() || lb.access_deny?.trim())
+  const ruled = !!(lb.access_mode || lb.access_allow?.trim() || lb.access_deny?.trim() || lb.access_allow_lists?.length || lb.access_deny_lists?.length)
   const [view, setView] = useState<"refused" | "all">(ruled ? "refused" : "all")
   const rows = (view === "refused" ? lb.metrics?.top_refused_clients : lb.metrics?.top_clients) ?? []
   const [target, setTarget] = useState<ClientStat | null>(null)
@@ -421,7 +421,7 @@ function AccessCard({ lb }: { lb: LoadBalancer }) {
   const blocked = lb.metrics?.blocked ?? 0
   const top = lb.metrics?.blocked_top ?? []
   const biggest = Math.max(1, ...top.map((t) => t.count))
-  const ruled = !!(lb.access_mode || lb.access_allow?.trim() || lb.access_deny?.trim())
+  const ruled = !!(lb.access_mode || lb.access_allow?.trim() || lb.access_deny?.trim() || lb.access_allow_lists?.length || lb.access_deny_lists?.length)
   if (!ruled && blocked === 0) return null
   return (
     <section aria-labelledby="acc-title" className="flex flex-col gap-3.5 rounded-[18px] border border-line bg-white px-6 py-5">

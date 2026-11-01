@@ -1,8 +1,8 @@
 package models
 
 import (
-	"time"
 	"gorm.io/gorm"
+	"time"
 )
 
 type LoadBalancer struct {
@@ -11,18 +11,18 @@ type LoadBalancer struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 
-	Name      string `json:"name"`
-	Protocol  string `json:"protocol"` // http, https, tcp, udp
-	ListenIP  string `json:"listen_ip"`
-	ListenPort int   `json:"listen_port"`
-	Algorithm string `json:"algorithm"` // round_robin, least_conn, etc.
+	Name       string `json:"name"`
+	Protocol   string `json:"protocol"` // http, https, tcp, udp
+	ListenIP   string `json:"listen_ip"`
+	ListenPort int    `json:"listen_port"`
+	Algorithm  string `json:"algorithm"` // round_robin, least_conn, etc.
 
 	// How backup nodes take over when no primary is healthy: all together
 	// (BackupAll, the default) or one at a time in list order (BackupOrdered)
 	BackupMode string `json:"backup_mode"`
 
-	BackendGroupID uint          `json:"backend_group_id"`
-	BackendGroup   BackendGroup  `json:"backend_group"`
+	BackendGroupID uint         `json:"backend_group_id"`
+	BackendGroup   BackendGroup `json:"backend_group"`
 
 	// TLS settings
 	SSLEnabled  bool   `json:"ssl_enabled"`
@@ -34,9 +34,9 @@ type LoadBalancer struct {
 	HasKeyData  bool   `json:"has_key_data" gorm:"-"`
 	ACMEEnabled bool   `json:"acme_enabled"`
 	ACMEEmail   string `json:"acme_email"`
-	ACMEDomains string `json:"acme_domains"` // Comma separated list of domains
+	ACMEDomains string `json:"acme_domains"`         // Comma separated list of domains
 	ACMEStatus  string `json:"acme_status" gorm:"-"` // issuing, ok, error (not saved in db)
-	ACMEError   string `json:"acme_error" gorm:"-"` // error message if any (not saved in db)
+	ACMEError   string `json:"acme_error" gorm:"-"`  // error message if any (not saved in db)
 
 	// HTTP/3 (QUIC) for client connections
 	HTTP3Enabled bool `json:"http3_enabled"`
@@ -65,10 +65,12 @@ type LoadBalancer struct {
 
 	// Who may connect, by source address. Connections from anyone else are
 	// dropped before any data is read (see access.go in the engine).
-	AccessMode      string `json:"access_mode"`      // "" everyone; "allow" only AccessCountries; "deny" everyone except AccessCountries
-	AccessCountries string `json:"access_countries"` // ISO 3166 codes, comma separated, e.g. "RU,BY"
-	AccessAllow     string `json:"access_allow"`     // always let these through: addresses and subnets, one per line
-	AccessDeny      string `json:"access_deny"`      // always refuse these
+	AccessMode       string `json:"access_mode"`      // "" everyone; "allow" only AccessCountries; "deny" everyone except AccessCountries
+	AccessCountries  string `json:"access_countries"` // ISO 3166 codes, comma separated, e.g. "RU,BY"
+	AccessAllow      string `json:"access_allow"`     // always let these through: addresses and subnets, one per line
+	AccessDeny       string `json:"access_deny"`      // always refuse these
+	AccessAllowLists []uint `json:"access_allow_lists" gorm:"serializer:json;type:text"`
+	AccessDenyLists  []uint `json:"access_deny_lists" gorm:"serializer:json;type:text"`
 
 	// Runtime state
 	Status      string                 `gorm:"-" json:"status"` // starting, running, error, stopped
@@ -77,37 +79,37 @@ type LoadBalancer struct {
 }
 
 type BackendGroup struct {
-	ID        uint           `gorm:"primarykey" json:"id"`
-	Name      string         `json:"name"`
-	Backends  []BackendServer `json:"backends" gorm:"foreignKey:GroupID"`
+	ID       uint            `gorm:"primarykey" json:"id"`
+	Name     string          `json:"name"`
+	Backends []BackendServer `json:"backends" gorm:"foreignKey:GroupID"`
 }
 
 type BackendServer struct {
-	ID        uint           `gorm:"primarykey" json:"id"`
-	GroupID   uint           `json:"group_id"`
-	Name      string         `json:"name"`
-	Address   string         `json:"address"` // IP or Hostname
-	Port      int            `json:"port"`
-	Weight    int            `json:"weight" gorm:"default:1"`
-	Position  int            `json:"position"` // place in the balancer's list; backups take over in this order
-	Enabled   bool           `json:"enabled"`
-	Backup    bool           `json:"backup" gorm:"default:false"` // Backup server
-	MaxConns  int            `json:"max_conns"` // Maximum concurrent connections
-	TLSEnabled bool          `json:"tls_enabled"` // proxy to backend via HTTPS
-	SNI        string        `json:"sni"`         // SNI and Host header override
+	ID         uint   `gorm:"primarykey" json:"id"`
+	GroupID    uint   `json:"group_id"`
+	Name       string `json:"name"`
+	Address    string `json:"address"` // IP or Hostname
+	Port       int    `json:"port"`
+	Weight     int    `json:"weight" gorm:"default:1"`
+	Position   int    `json:"position"` // place in the balancer's list; backups take over in this order
+	Enabled    bool   `json:"enabled"`
+	Backup     bool   `json:"backup" gorm:"default:false"` // Backup server
+	MaxConns   int    `json:"max_conns"`                   // Maximum concurrent connections
+	TLSEnabled bool   `json:"tls_enabled"`                 // proxy to backend via HTTPS
+	SNI        string `json:"sni"`                         // SNI and Host header override
 	// Health Check settings
-	HCEnabled   bool   `json:"hc_enabled"`
-	HCProtocol  string `json:"hc_protocol"` // http, https, tcp, udp, dns
-	HCPort      int    `json:"hc_port"`     // Optional override port for HC
-	HCPath      string `json:"hc_path"`     // HTTP path, or query name for dns checks
-	HCInterval  int    `json:"hc_interval"` // in seconds
-	HCTimeout   int    `json:"hc_timeout"`
-	HCFailureThreshold int `json:"hc_failure_threshold"`
-	HCRecoveryThreshold int `json:"hc_recovery_threshold"`
+	HCEnabled           bool   `json:"hc_enabled"`
+	HCProtocol          string `json:"hc_protocol"` // http, https, tcp, udp, dns
+	HCPort              int    `json:"hc_port"`     // Optional override port for HC
+	HCPath              string `json:"hc_path"`     // HTTP path, or query name for dns checks
+	HCInterval          int    `json:"hc_interval"` // in seconds
+	HCTimeout           int    `json:"hc_timeout"`
+	HCFailureThreshold  int    `json:"hc_failure_threshold"`
+	HCRecoveryThreshold int    `json:"hc_recovery_threshold"`
 
 	// State (Not persisted in DB, but tracked by HealthChecker)
-	Status    string         `gorm:"-" json:"status"` // UP, DOWN, DISABLED, DRAIN
-	Metrics   map[string]interface{} `gorm:"-" json:"metrics,omitempty"`
+	Status  string                 `gorm:"-" json:"status"` // UP, DOWN, DISABLED, DRAIN
+	Metrics map[string]interface{} `gorm:"-" json:"metrics,omitempty"`
 }
 
 const (
@@ -150,13 +152,13 @@ type User struct {
 }
 
 type Settings struct {
-	ID                uint   `gorm:"primarykey" json:"id"`
-	TelegramBotToken  string `json:"telegram_bot_token,omitempty"` // write-only: never returned by the API
-	TelegramBotTokenSet bool `json:"telegram_bot_token_set" gorm:"-"`
-	TelegramChatID    string `json:"telegram_chat_id"`
-	NotificationsEnabled bool `json:"notifications_enabled" gorm:"default:false"`
-	GeoUpdateOff      bool   `json:"-"` // automatic updates of the country database are switched off
-	GeoUpdateHours    int    `json:"-"` // how often to update; 0 means every 24 hours
-	JWTSecret         string `json:"-"` // generated on first start when JWT_SECRET is not set
-	SchemaVersion     int    `json:"-"` // applied data migrations
+	ID                   uint   `gorm:"primarykey" json:"id"`
+	TelegramBotToken     string `json:"telegram_bot_token,omitempty"` // write-only: never returned by the API
+	TelegramBotTokenSet  bool   `json:"telegram_bot_token_set" gorm:"-"`
+	TelegramChatID       string `json:"telegram_chat_id"`
+	NotificationsEnabled bool   `json:"notifications_enabled" gorm:"default:false"`
+	GeoUpdateOff         bool   `json:"-"` // automatic updates of the country database are switched off
+	GeoUpdateHours       int    `json:"-"` // how often to update; 0 means every 24 hours
+	JWTSecret            string `json:"-"` // generated on first start when JWT_SECRET is not set
+	SchemaVersion        int    `json:"-"` // applied data migrations
 }
