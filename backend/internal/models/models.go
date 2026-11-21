@@ -97,6 +97,7 @@ type BackendServer struct {
 	MaxConns   int    `json:"max_conns"`                   // Maximum concurrent connections
 	TLSEnabled bool   `json:"tls_enabled"`                 // proxy to backend via HTTPS
 	SNI        string `json:"sni"`                         // SNI and Host header override
+	ClientSNI  string `json:"client_sni"`                  // ClientHello SNI used to route raw TCP connections
 	// Health Check settings
 	HCEnabled           bool   `json:"hc_enabled"`
 	HCProtocol          string `json:"hc_protocol"` // http, https, tcp, udp, dns

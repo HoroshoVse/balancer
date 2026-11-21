@@ -100,6 +100,7 @@ func (lb *LoadBalancer) Normalize() {
 			b.Weight = 1
 		}
 		b.SNI = strings.TrimSpace(b.SNI)
+		b.ClientSNI = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(b.ClientSNI), "."))
 		b.HCProtocol = strings.ToLower(strings.TrimSpace(b.HCProtocol))
 		if b.HCPath != "" && !strings.HasPrefix(b.HCPath, "/") && b.HCProtocol != "dns" {
 			b.HCPath = "/" + b.HCPath
@@ -203,6 +204,18 @@ func (b *BackendServer) validate() error {
 	}
 	if b.MaxConns < 0 {
 		return errors.New("max connections cannot be negative")
+	}
+	if len(b.ClientSNI) > 1024 {
+		return errors.New("client SNI route is too long")
+	}
+	for _, name := range strings.Split(b.ClientSNI, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if len(name) > 253 || strings.ContainsAny(name, " /\\:*?\t\r\n") || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.Contains(name, "..") {
+			return fmt.Errorf("invalid client SNI route %q", name)
+		}
 	}
 	if b.HCEnabled {
 		if b.HCProtocol != "" && !validHCProtocols[b.HCProtocol] {

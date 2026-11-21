@@ -79,12 +79,36 @@ func (l *LoadBalancerInstance) noteDialSuccess(b *models.BackendServer) {
 // is safe) instead of dropping the client until the health check catches up.
 // The nodes that were active come first; if they all fail, the healthy
 // backups are tried.
-func (l *LoadBalancerInstance) dialTCPBackend(clientIP string) (*models.BackendServer, net.Conn, error) {
+func (l *LoadBalancerInstance) dialTCPBackendForSNI(clientIP, name string) (*models.BackendServer, net.Conn, error) {
 	timeout := msOr(l.Config.ConnectTimeout, defaultConnectTimeout)
 	budget := time.Now().Add(2 * timeout) // slow failures must not pile up into a long wait
 	lists := [][]*models.BackendServer{
 		l.backends.Load().([]*models.BackendServer),
 		l.fallback.Load().([]*models.BackendServer),
+	}
+	if l.hasClientSNIRoutes() {
+		matched := false
+		for i, list := range lists {
+			filtered := make([]*models.BackendServer, 0, len(list))
+			for _, b := range list {
+				if name != "" && matchesClientSNI(b.ClientSNI, name) {
+					filtered = append(filtered, b)
+					matched = true
+				}
+			}
+			lists[i] = filtered
+		}
+		if !matched {
+			// Unmatched names use only nodes without an SNI route. Sending a
+			// different name to a configured route would break REALITY.
+			for i, list := range [][]*models.BackendServer{l.backends.Load().([]*models.BackendServer), l.fallback.Load().([]*models.BackendServer)} {
+				for _, b := range list {
+					if b.ClientSNI == "" {
+						lists[i] = append(lists[i], b)
+					}
+				}
+			}
+		}
 	}
 	tried := make(map[uint]bool, maxDialAttempts)
 	lastErr := errNoBackend

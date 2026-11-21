@@ -29,6 +29,7 @@ export function blankNode(overrides: Partial<BackendNode> = {}): BackendNode {
     max_conns: 0,
     tls_enabled: false,
     sni: "",
+    client_sni: "",
     hc_enabled: true,
     hc_protocol: "tcp",
     hc_port: "",

@@ -487,8 +487,16 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 	defer clientConn.Close()
 
 	clientIP, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
+	clientSNI := ""
+	if l.hasClientSNIRoutes() {
+		var prefix []byte
+		clientSNI, prefix = peekClientSNI(clientConn)
+		if len(prefix) > 0 {
+			clientConn = &replayConn{Conn: clientConn, prefix: prefix}
+		}
+	}
 	start := time.Now()
-	target, backendConn, err := l.dialTCPBackend(clientIP)
+	target, backendConn, err := l.dialTCPBackendForSNI(clientIP, clientSNI)
 	Metrics.RecordRequest(l.Config.ID, time.Since(start), err != nil)
 	if err != nil {
 		return // already logged per node by dialTCPBackend

@@ -16,6 +16,7 @@ export interface BackendNode {
   max_conns: number
   tls_enabled: boolean
   sni: string
+  client_sni: string
   hc_enabled: boolean
   hc_protocol: string
   hc_port: number | ""

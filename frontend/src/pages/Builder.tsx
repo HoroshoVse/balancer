@@ -243,7 +243,14 @@ function NodeRow({
               <label className="flex min-w-[170px] flex-1 flex-col gap-1.5 text-[13px] text-ink-2">
                 SNI / Host
                 <input value={node.sni} onChange={(e) => onChange({ sni: e.target.value })} placeholder="как у клиента" className={smallField} />
-                <span className="text-xs text-ink-3">подменить имя для узла</span>
+                <span className="text-xs text-ink-3">для TLS к узлу и HTTP-проверок</span>
+              </label>
+            )}
+            {(kind === "tcp" || kind === "https_pass") && (
+              <label className="flex min-w-[170px] flex-1 flex-col gap-1.5 text-[13px] text-ink-2">
+                SNI клиента для маршрута
+                <input value={node.client_sni ?? ""} onChange={(e) => onChange({ client_sni: e.target.value })} placeholder="vpn.example.com" className={smallField} />
+                <span className="text-xs text-ink-3">несколько имён через запятую; пусто — обычная балансировка</span>
               </label>
             )}
           </div>
