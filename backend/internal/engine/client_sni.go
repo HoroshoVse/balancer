@@ -10,21 +10,6 @@ import (
 	"github.com/balancer/backend/internal/models"
 )
 
-// replayConn returns the inspected ClientHello bytes before reading the socket.
-type replayConn struct {
-	net.Conn
-	prefix []byte
-}
-
-func (c *replayConn) Read(p []byte) (int, error) {
-	if len(c.prefix) != 0 {
-		n := copy(p, c.prefix)
-		c.prefix = c.prefix[n:]
-		return n, nil
-	}
-	return c.Conn.Read(p)
-}
-
 func matchesClientSNI(routes, name string) bool {
 	name = strings.ToLower(strings.TrimSuffix(name, "."))
 	for _, route := range strings.Split(routes, ",") {

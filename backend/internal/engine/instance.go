@@ -1,11 +1,13 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -488,12 +490,9 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 
 	clientIP, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
 	clientSNI := ""
+	var clientHello []byte
 	if l.hasClientSNIRoutes() {
-		var prefix []byte
-		clientSNI, prefix = peekClientSNI(clientConn)
-		if len(prefix) > 0 {
-			clientConn = &replayConn{Conn: clientConn, prefix: prefix}
-		}
+		clientSNI, clientHello = peekClientSNI(clientConn)
 	}
 	start := time.Now()
 	target, backendConn, err := l.dialTCPBackendForSNI(clientIP, clientSNI)
@@ -515,6 +514,14 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 	// If TLSEnabled is true for this backend, wrap the connection in TLS
 	if target.TLSEnabled {
 		backendConn = newBackendTLSClient(backendConn, target.SNI, false)
+	}
+	// Forward the inspected bytes, then copy using the original TCP socket.
+	// This preserves half-close and the kernel's splice fast path.
+	if len(clientHello) > 0 {
+		if _, err := io.Copy(backendConn, bytes.NewReader(clientHello)); err != nil {
+			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to forward ClientHello to backend: %v", err))
+			return
+		}
 	}
 
 	proxyStreams(clientConn, backendConn, msOr(l.Config.IdleTimeout, 0))

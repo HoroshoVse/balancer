@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"crypto/tls"
 	"io"
 	"net"
@@ -60,23 +59,82 @@ func TestClientSNIRoutingPreservesClientHello(t *testing.T) {
 	}
 }
 
-func TestReplayConn(t *testing.T) {
-	server, client := net.Pipe()
-	defer server.Close()
-	defer client.Close()
-	go client.Write([]byte("tail"))
-	c := &replayConn{Conn: server, prefix: []byte("head")}
-	buf := make([]byte, 8)
-	if _, err := io.ReadFull(c, buf); err != nil || !bytes.Equal(buf, []byte("headtail")) {
-		t.Fatalf("replayed %q: %v", buf, err)
-	}
-}
-
 func TestClientSNIMatchesExactNamesOnly(t *testing.T) {
 	if !matchesClientSNI("one.example, TWO.example", "two.example") {
 		t.Fatal("second configured name should match")
 	}
 	if matchesClientSNI("one.example, two.example", "sub.two.example") {
 		t.Fatal("a subdomain must not match an exact name")
+	}
+}
+
+func TestClientSNIRoutingPreservesHalfClose(t *testing.T) {
+	// Capture a genuine ClientHello without needing a TLS server certificate.
+	server, client := net.Pipe()
+	hello := make(chan []byte, 1)
+	go func() {
+		_, raw := peekClientSNI(server)
+		hello <- raw
+		server.Close()
+	}()
+	_ = tls.Client(client, &tls.Config{ServerName: "half.example"}).Handshake()
+	client.Close()
+	raw := <-hello
+	if len(raw) == 0 {
+		t.Fatal("empty ClientHello")
+	}
+
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	got := make(chan string, 1)
+	go func() {
+		conn, err := backend.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, len(raw))
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			got <- "read hello: " + err.Error()
+			return
+		}
+		conn.Write([]byte("ready"))
+		conn.(*net.TCPConn).CloseWrite()
+		var more [5]byte
+		if _, err := io.ReadFull(conn, more[:]); err != nil {
+			got <- "read after: " + err.Error()
+			return
+		}
+		got <- string(more[:])
+	}()
+	port := freePort(t, "tcp")
+	startInstance(t, models.LoadBalancer{
+		ID: 993, Name: "sni-half-close", Protocol: "tcp", ListenIP: "127.0.0.1", ListenPort: port,
+		BackendGroup: models.BackendGroup{Backends: []models.BackendServer{
+			{ID: 993, Address: "127.0.0.1", Port: backend.Addr().(*net.TCPAddr).Port, Enabled: true, ClientSNI: "half.example"},
+		}},
+	})
+	upstream, err := net.Dial("tcp", backendAddr("127.0.0.1", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	upstream.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := upstream.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	var ready [5]byte
+	if _, err := io.ReadFull(upstream, ready[:]); err != nil || string(ready[:]) != "ready" {
+		t.Fatalf("ready=%q err=%v", ready, err)
+	}
+	if _, err := upstream.Write([]byte("after")); err != nil {
+		t.Fatal(err)
+	}
+	if result := <-got; result != "after" {
+		t.Fatalf("backend received %q", result)
 	}
 }
