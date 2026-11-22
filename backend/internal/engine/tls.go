@@ -406,6 +406,9 @@ func (t *backendTransport) closeIdleConnections() {
 func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	start := time.Now()
 	target, _ := req.Context().Value(ctxKeyBackend).(*models.BackendServer)
+	if target != nil && req.Body != nil {
+		req.Body = &countingBody{ReadCloser: req.Body, counter: &Metrics.getOrCreateBackend(target.ID).ToBackendBytes}
+	}
 
 	// TLS server name: the node's SNI override, otherwise the requested host.
 	serverName := ""
@@ -420,6 +423,9 @@ func (t *backendTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 
 	resp, err := t.transportFor(serverName).RoundTrip(req)
+	if target != nil && resp != nil && resp.Body != nil {
+		resp.Body = &countingBody{ReadCloser: resp.Body, counter: &Metrics.getOrCreateBackend(target.ID).FromBackendBytes}
+	}
 	latency := time.Since(start)
 
 	isError := err != nil || (resp != nil && resp.StatusCode >= 500)

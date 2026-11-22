@@ -20,8 +20,8 @@ import (
 // don't exhaust ephemeral ports.
 
 const (
-	dnsHeaderLen        = 12
-	dnsSocketsPerNode   = 4
+	dnsHeaderLen         = 12
+	dnsSocketsPerNode    = 4
 	dnsMaxPendingPerSock = 60000
 )
 
@@ -158,7 +158,9 @@ func (d *dnsProxy) handleQuery(data []byte, client *net.UDPAddr) {
 	msg = append(msg, data...)
 	binary.BigEndian.PutUint16(msg[idOffset:], id)
 
-	if _, err := up.conn.Write(msg); err != nil {
+	written, err := up.conn.Write(msg)
+	atomic.AddUint64(&Metrics.getOrCreateBackend(target.ID).ToBackendBytes, uint64(written))
+	if err != nil {
 		if up.take(id) != nil {
 			l.releaseBackend(target)
 			Metrics.RecordRequest(l.Config.ID, 0, true)
@@ -188,7 +190,9 @@ func (d *dnsProxy) readReplies(u *dnsUpstream) {
 			continue // late answer to a query that already timed out
 		}
 		binary.BigEndian.PutUint16(buf, pend.origID)
-		_, err = d.listener.WriteToUDP(buf[:n], pend.client)
+		written, writeErr := d.listener.WriteToUDP(buf[:n], pend.client)
+		atomic.AddUint64(&Metrics.getOrCreateBackend(pend.backend.ID).FromBackendBytes, uint64(written))
+		err = writeErr
 
 		latency := time.Since(pend.sent)
 		l.releaseBackend(pend.backend)

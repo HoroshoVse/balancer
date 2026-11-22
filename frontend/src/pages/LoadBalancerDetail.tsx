@@ -21,6 +21,7 @@ import { deleteLB, mapNodes, testNode, updateLB } from "@/lib/lbActions"
 import { useLBs } from "@/lib/lbs"
 import { activeNodes, algorithmLabel, backupQueue, formatNumber, kindLabel, kindOf, listenAddr, orderedBackups } from "@/lib/lbModel"
 import { usePoll } from "@/lib/usePoll"
+import { balancerTotalMbps, formatMbps, nodeDownloadMbps, nodeUploadMbps } from "@/lib/traffic"
 import type { BackendNode, ClientStat, LoadBalancer, LogEntry, MetricsSnapshot } from "@/types"
 
 const checkLabel: Record<string, string> = { dns: "DNS-запрос", http: "HTTP-запрос", https: "HTTPS-запрос", tcp: "подключение TCP", udp: "пакет UDP" }
@@ -47,7 +48,8 @@ const PIPE = 10 // px, the width of a link carrying all the traffic
 function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
   const kind = kindOf(lb)
   const failed = lb.status === "error"
-  const live = failed ? 0 : rps
+  const speed = balancerTotalMbps(lb)
+  const live = Math.max(failed ? 0 : rps, speed)
   const nodes = lb.backend_group?.backends ?? []
   const domain = (lb.acme_domains || "").split(",")[0]?.trim()
   const ring: Record<NodeState, { ring: string; label: string; card: string; text: string }> = {
@@ -108,7 +110,7 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
           className="pointer-events-none absolute whitespace-nowrap font-mono text-[11px] text-cobalt-light"
           style={{ left: geo.label.x, top: geo.label.y, transform: geo.label.wide ? "translate(-50%, -100%)" : "translateY(-50%)" }}
         >
-          {live > 0 ? `${formatNumber(live, live < 10 ? 1 : 0)} запр/с` : "тихо"}
+          {speed > 0 ? `${formatMbps(speed)} Мбит/с` : rps > 0 ? `${formatNumber(rps, rps < 10 ? 1 : 0)} запр/с` : "тихо"}
         </span>
       )}
 
@@ -167,6 +169,7 @@ function Topology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
                   <span className="truncate text-xs text-[#C6CEDA]">
                     {st === "active" ? `${formatNumber(b.metrics?.avg_latency_ms ?? 0, 1)} мс · ${formatNumber(b.metrics?.rps ?? 0, (b.metrics?.rps ?? 0) < 10 ? 1 : 0)} запр/с` : st === "standby" ? waitingText(b) : r.text}
                   </span>
+                  <span className="font-mono text-xs text-[#C6CEDA]">↓ {formatMbps(nodeDownloadMbps(b))} · ↑ {formatMbps(nodeUploadMbps(b))} Мбит/с</span>
                 </span>
               </div>
             )
@@ -266,7 +269,10 @@ function NodesTable({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void
                   </td>
                   <td className="border-t border-ground px-3 py-3.5">{b.backup && orderedBackups(lb) && queue.has(b) ? `резерв ${queue.get(b)}` : b.backup ? "резерв" : "основной"}</td>
                   <td className={`border-t border-ground px-3 py-3.5 ${stateText[st].cls}`}>{stateText[st].text}</td>
-                  <td className="border-t border-ground px-3 py-3.5 font-mono">{formatNumber(b.metrics?.rps ?? 0, (b.metrics?.rps ?? 0) < 10 ? 1 : 0)}/с</td>
+                  <td className="border-t border-ground px-3 py-3.5 font-mono">
+                    <span className="block">{formatNumber(b.metrics?.rps ?? 0, (b.metrics?.rps ?? 0) < 10 ? 1 : 0)} запр/с</span>
+                    <span className="block text-xs text-ink-3">↓ {formatMbps(nodeDownloadMbps(b))} · ↑ {formatMbps(nodeUploadMbps(b))} Мбит/с</span>
+                  </td>
                   <td className="border-t border-ground px-3 py-3.5 font-mono">{st === "active" ? `${formatNumber(b.metrics?.avg_latency_ms ?? 0, 1)} мс` : "—"}</td>
                   <td className="border-t border-ground px-3 py-3.5">
                     <span className="inline-flex items-center gap-2">

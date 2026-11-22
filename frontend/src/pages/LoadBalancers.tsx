@@ -17,6 +17,7 @@ import { useLBs } from "@/lib/lbs"
 import { backupQueue, formatNumber, kindLabel, kindOf, listenAddr, orderedBackups, type Kind } from "@/lib/lbModel"
 import { recipeList } from "@/lib/recipes"
 import { usePoll } from "@/lib/usePoll"
+import { balancerTotalMbps, formatMbps, nodeDownloadMbps, nodeUploadMbps } from "@/lib/traffic"
 import type { BackendNode, LoadBalancer, MetricsSnapshot } from "@/types"
 
 type Filter = "all" | "http" | "tcp" | "udp"
@@ -55,7 +56,7 @@ function MiniTopology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
   const nodes = lb.backend_group?.backends ?? []
   const shown = nodes.slice(0, 4)
   const queue = orderedBackups(lb) ? backupQueue(nodes) : new Map<BackendNode, number>()
-  const live = lb.status === "error" ? 0 : rps
+  const live = Math.max(lb.status === "error" ? 0 : rps, balancerTotalMbps(lb))
   const flow = flowOf(lb, live)
   const base = live > 0 ? Math.round(Math.min(12, 8 + live / 25)) : 0
 
@@ -105,6 +106,7 @@ function MiniTopology({ lb, rps }: { lb: LoadBalancer; rps: number }) {
               <span className={`box-border h-[7px] w-[7px] flex-none rounded-full ${!b.enabled ? "bg-line-strong" : down ? "bg-down" : b.backup ? "border-2 border-ok" : "bg-ok"}`} />
               {b.name || b.address}
               <span className="font-mono text-ink-3">{!b.enabled ? "выкл." : down ? "не отвечает" : b.backup ? (queue.has(b) ? `резерв ${queue.get(b)}` : "резерв") : b.address}</span>
+              <span className="font-mono text-ink-3">↓ {formatMbps(nodeDownloadMbps(b))} · ↑ {formatMbps(nodeUploadMbps(b))} Мбит/с</span>
             </span>
           )
         })}
@@ -188,6 +190,7 @@ function Card({ lb, rps, history, onChanged, onDelete }: { lb: LoadBalancer; rps
 
       <div className="flex flex-wrap">
         <Metric first label="Нагрузка" value={formatNumber(rps, rps > 0 && rps < 10 ? 1 : 0)} unit="запр/с" />
+        <Metric label="Поток" value={formatMbps(balancerTotalMbps(lb))} unit="Мбит/с" />
         <Metric label="Задержка" value={formatNumber(latency, 1)} unit="мс" />
         <Metric label="Ошибки" value={formatNumber(errors, errors > 0 && errors < 1 ? 2 : 0)} unit="%" />
       </div>

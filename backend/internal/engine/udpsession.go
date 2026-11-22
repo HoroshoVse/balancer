@@ -70,7 +70,9 @@ func (l *LoadBalancerInstance) relayUDPReplies(clientKey string, sess *udpSessio
 		n, err := sess.conn.Read(*bp)
 		if err == nil {
 			atomic.StoreInt64(&sess.lastSeen, time.Now().Unix())
-			_, err = clientConn.WriteToUDP((*bp)[:n], clientAddr)
+			written, writeErr := clientConn.WriteToUDP((*bp)[:n], clientAddr)
+			atomic.AddUint64(&Metrics.getOrCreateBackend(sess.backend.ID).FromBackendBytes, uint64(written))
+			err = writeErr
 		}
 		udpBufs.Put(bp)
 		if err != nil {

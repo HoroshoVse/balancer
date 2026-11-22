@@ -32,14 +32,18 @@ var copyBufs = sync.Pool{New: func() any {
 // request, shut down writing, wait for the answer) work. Any error, an idle
 // timeout, or a connection that cannot half-close ends both directions.
 func proxyStreams(a, b net.Conn, idle time.Duration) {
+	proxyStreamsTracked(a, b, idle, nil, nil)
+}
+
+func proxyStreamsTracked(a, b net.Conn, idle time.Duration, toBackend, fromBackend *uint64) {
 	defer a.Close()
 	defer b.Close()
 
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().UnixNano())
 
-	pump := func(dst, src net.Conn) {
-		if !copyOneWay(dst, src, idle, &lastActivity) || !closeWrite(dst) {
+	pump := func(dst, src net.Conn, counter *uint64) {
+		if !copyOneWay(dst, src, idle, &lastActivity, counter) || !closeWrite(dst) {
 			a.Close() // unblocks the opposite direction
 			b.Close()
 			return
@@ -51,22 +55,24 @@ func proxyStreams(a, b net.Conn, idle time.Duration) {
 	}
 
 	done := make(chan struct{})
-	go func() { defer close(done); pump(b, a) }()
-	pump(a, b) // this goroutine carries the other direction: one goroutine less per connection
+	go func() { defer close(done); pump(b, a, toBackend) }()
+	pump(a, b, fromBackend) // this goroutine carries the other direction: one goroutine less per connection
 	<-done
 }
 
 // copyOneWay copies src to dst until src ends. It reports whether it ended
 // with a normal EOF, as opposed to an error or an idle timeout.
-func copyOneWay(dst, src net.Conn, idle time.Duration, lastActivity *atomic.Int64) (clean bool) {
-	if idle <= 0 {
+func copyOneWay(dst, src net.Conn, idle time.Duration, lastActivity *atomic.Int64, counter *uint64) (clean bool) {
+	if idle <= 0 && counter == nil {
 		_, err := io.Copy(dst, src) // keeps the kernel splice fast path
 		return err == nil
 	}
 
 	wait := readWaiter(src)
 	for {
-		src.SetReadDeadline(time.Now().Add(idle))
+		if idle > 0 {
+			src.SetReadDeadline(time.Now().Add(idle))
+		}
 
 		var err error
 		if wait != nil {
@@ -78,8 +84,14 @@ func copyOneWay(dst, src net.Conn, idle time.Duration, lastActivity *atomic.Int6
 			n, err = src.Read(*bp)
 			if n > 0 {
 				lastActivity.Store(time.Now().UnixNano())
-				dst.SetWriteDeadline(time.Now().Add(idle))
-				if _, werr := dst.Write((*bp)[:n]); werr != nil {
+				if idle > 0 {
+					dst.SetWriteDeadline(time.Now().Add(idle))
+				}
+				written, werr := dst.Write((*bp)[:n])
+				if counter != nil && written > 0 {
+					atomic.AddUint64(counter, uint64(written))
+				}
+				if werr != nil {
 					copyBufs.Put(bp)
 					return false
 				}

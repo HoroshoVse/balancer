@@ -1,5 +1,9 @@
 export interface BackendMetrics {
   rps?: number
+  upload_bps?: number // bytes per second from clients to this node
+  download_bps?: number // bytes per second from this node to clients
+  upload_bytes?: number
+  download_bytes?: number
   avg_latency_ms?: number
   error_rate?: number
   total_requests?: number

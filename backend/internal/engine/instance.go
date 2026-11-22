@@ -518,13 +518,16 @@ func (l *LoadBalancerInstance) handleTCPConnection(clientConn net.Conn) {
 	// Forward the inspected bytes, then copy using the original TCP socket.
 	// This preserves half-close and the kernel's splice fast path.
 	if len(clientHello) > 0 {
-		if _, err := io.Copy(backendConn, bytes.NewReader(clientHello)); err != nil {
+		n, err := io.Copy(backendConn, bytes.NewReader(clientHello))
+		atomic.AddUint64(&Metrics.getOrCreateBackend(target.ID).ToBackendBytes, uint64(n))
+		if err != nil {
 			Logger.ErrorLB(l.Config.Name, fmt.Sprintf("Failed to forward ClientHello to backend: %v", err))
 			return
 		}
 	}
 
-	proxyStreams(clientConn, backendConn, msOr(l.Config.IdleTimeout, 0))
+	bm := Metrics.getOrCreateBackend(target.ID)
+	proxyStreamsTracked(clientConn, backendConn, msOr(l.Config.IdleTimeout, 0), &bm.ToBackendBytes, &bm.FromBackendBytes)
 }
 
 func (l *LoadBalancerInstance) startUDP() error {
@@ -611,7 +614,9 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	if val, ok := l.udpSessions.Load(clientKey); ok {
 		sess := val.(*udpSession)
 		atomic.StoreInt64(&sess.lastSeen, time.Now().Unix())
-		if _, err := sess.conn.Write(payload); err != nil {
+		n, err := sess.conn.Write(payload)
+		atomic.AddUint64(&Metrics.getOrCreateBackend(sess.backend.ID).ToBackendBytes, uint64(n))
+		if err != nil {
 			l.closeUDPSession(clientKey, sess)
 		}
 		return
@@ -647,7 +652,8 @@ func (l *LoadBalancerInstance) handleUDPPacket(data []byte, clientAddr *net.UDPA
 	}
 	l.udpSessions.Store(clientKey, sess)
 
-	_, err = backendConn.Write(payload)
+	n, err := backendConn.Write(payload)
+	atomic.AddUint64(&Metrics.getOrCreateBackend(target.ID).ToBackendBytes, uint64(n))
 	Metrics.RecordBackendRequest(target.ID, time.Since(start), err != nil)
 	Metrics.RecordRequest(l.Config.ID, time.Since(start), err != nil)
 	if err != nil {

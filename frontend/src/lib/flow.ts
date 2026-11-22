@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react"
 import { activeNodes } from "@/lib/lbModel"
 import type { BackendNode, LoadBalancer } from "@/types"
+import { nodeTotalMbps } from "./traffic"
 
 // Traffic diagrams: blocks are laid out with flex, the links between them are
 // drawn in SVG from the blocks' measured positions, so they always meet.
@@ -72,18 +73,26 @@ export type NodeFlow = { kind: FlowKind; share: number }
  * How each node of a balancer takes part in the traffic right now: "live" with
  * its share of requests, idle (healthy but waiting), down or switched off.
  */
-export function flowOf(lb: LoadBalancer, rps: number): (b: BackendNode) => NodeFlow {
-  const live = lb.status !== "error" && rps > 0
+export function flowOf(lb: LoadBalancer, activity: number): (b: BackendNode) => NodeFlow {
+	const live = lb.status !== "error" && activity > 0
   const active = activeNodes(lb)
-  const total = active.reduce((sum, b) => sum + (b.metrics?.rps ?? 0), 0)
+	const totalSpeed = (lb.backend_group?.backends ?? []).reduce((sum, b) => sum + nodeTotalMbps(b), 0)
+	const totalRequests = active.reduce((sum, b) => sum + (b.metrics?.rps ?? 0), 0)
   return (b) => {
+		// A connection opened before a health or admin state change can still
+		// carry bytes. The line represents observed traffic, not eligibility.
+		if (totalSpeed > 0 && nodeTotalMbps(b) > 0) {
+			return { kind: "live", share: nodeTotalMbps(b) / totalSpeed }
+		}
     if (!b.enabled) return { kind: "off", share: 0 }
     if (b.status === "DOWN") return { kind: "down", share: 0 }
-    if (!live || !active.some((a) => a.id === b.id)) return { kind: "idle", share: 0 }
+		if (!live) return { kind: "idle", share: 0 }
+		if (totalSpeed > 0) return { kind: "idle", share: 0 }
+		if (!active.some((a) => a.id === b.id)) return { kind: "idle", share: 0 }
     // No per-node numbers yet: split evenly between the active nodes
-    if (total === 0) return { kind: "live", share: 1 / active.length }
+		if (totalRequests === 0) return { kind: "live", share: 1 / active.length }
     const own = b.metrics?.rps ?? 0
-    return own > 0 ? { kind: "live", share: own / total } : { kind: "idle", share: 0 }
+		return own > 0 ? { kind: "live", share: own / totalRequests } : { kind: "idle", share: 0 }
   }
 }
 

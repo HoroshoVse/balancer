@@ -8,6 +8,7 @@ import { useLBs } from "@/lib/lbs"
 import { activeNodes, algorithmLabel, backupQueue, formatNumber, kindLabel, kindOf, lbHealth, listenAddr, orderedBackups, plural } from "@/lib/lbModel"
 import { recipeList } from "@/lib/recipes"
 import { usePoll } from "@/lib/usePoll"
+import { balancerTotalMbps, formatMbps, nodeDownloadMbps, nodeUploadMbps } from "@/lib/traffic"
 import { Bars } from "@/components/Bars"
 import { FlowPaths } from "@/components/Flow"
 import type { BackendNode, HostStats, LoadBalancer, LogEntry, MetricsSnapshot } from "@/types"
@@ -62,6 +63,7 @@ function NodeChip({ view, nodeRef }: { view: NodeView; nodeRef: (el: HTMLDivElem
         <span className="truncate font-normal text-ink-3">{styles.role}</span>
       </span>
       <span className="truncate font-mono text-xs text-ink-2">{styles.meta}</span>
+      <span className="font-mono text-xs text-ink-2">↓ {formatMbps(nodeDownloadMbps(node))} · ↑ {formatMbps(nodeUploadMbps(node))} Мбит/с · {formatNumber(node.metrics?.rps ?? 0, 1)} запр/с</span>
     </div>
   )
 }
@@ -69,13 +71,14 @@ function NodeChip({ view, nodeRef }: { view: NodeView; nodeRef: (el: HTMLDivElem
 // Room for clients 150 + balancer 250 + nodes 260 side by side, with links between them
 const FLOW_WIDE_MIN = 780
 
-function FlowRow({ lb, rps, maxRps }: { lb: LoadBalancer; rps: number; maxRps: number }) {
+function FlowRow({ lb, rps, maxActivity }: { lb: LoadBalancer; rps: number; maxActivity: number }) {
   const kind = kindOf(lb)
   const failed = lb.status === "error"
-  const live = failed ? 0 : rps
+  const speed = balancerTotalMbps(lb)
+  const live = Math.max(failed ? 0 : rps, speed)
   const views = nodeViews(lb)
   const flow = flowOf(lb, live)
-  const trunk = live > 0 ? Math.round(6 + 8 * (live / maxRps)) : 0
+  const trunk = live > 0 ? Math.round(6 + 8 * (live / maxActivity)) : 0
   const domain = (lb.acme_domains || "").split(",")[0]?.trim()
 
   const rowRef = useRef<HTMLDivElement>(null)
@@ -112,7 +115,7 @@ function FlowRow({ lb, rps, maxRps }: { lb: LoadBalancer; rps: number; maxRps: n
             <Globe className="h-[18px] w-[18px] text-ink-2" aria-hidden="true" />
             Клиенты
           </span>
-          <span className="font-mono text-xs text-ink-3">{live > 0 ? `${formatNumber(live, live < 10 ? 1 : 0)} запр/с` : "нет трафика"}</span>
+          <span className="font-mono text-xs text-ink-3">{speed > 0 ? `${formatMbps(speed)} Мбит/с · ${formatNumber(rps, 1)} запр/с` : rps > 0 ? `${formatNumber(rps, 1)} запр/с` : "нет трафика"}</span>
         </span>
       </div>
       {wide && <div aria-hidden="true" className="min-w-[48px] flex-1" />}
@@ -396,7 +399,7 @@ export default function Dashboard() {
 
   const last = history[history.length - 1]
   const recent = history.slice(-30)
-  const maxRps = Math.max(1, ...lbs.map((lb) => rps[lb.id] ?? 0))
+  const maxActivity = Math.max(1, ...lbs.map((lb) => Math.max(rps[lb.id] ?? 0, balancerTotalMbps(lb))))
   const running = lbs.length - failedLBs.length
   const errorRate = last?.error_rate ?? 0
 
@@ -519,7 +522,7 @@ export default function Dashboard() {
             {lbs.map((lb, i) => (
               <div key={lb.id} className="flex flex-col gap-5">
                 {i > 0 && <div className="h-px bg-line-soft" />}
-                <FlowRow lb={lb} rps={rps[lb.id] ?? 0} maxRps={maxRps} />
+                <FlowRow lb={lb} rps={rps[lb.id] ?? 0} maxActivity={maxActivity} />
               </div>
             ))}
           </section>

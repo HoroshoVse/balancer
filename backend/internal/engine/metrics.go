@@ -12,44 +12,50 @@ import (
 )
 
 type MetricsSnapshot struct {
-	Timestamp      string  `json:"timestamp"` // HH:MM:SS, kept for compatibility
-	TS             int64   `json:"ts"`        // unix milliseconds
-	RPS            float64 `json:"rps"`
-	AvgLatencyMs   float64 `json:"avg_latency_ms"`
-	ErrorRate      float64 `json:"error_rate"`
+	Timestamp    string  `json:"timestamp"` // HH:MM:SS, kept for compatibility
+	TS           int64   `json:"ts"`        // unix milliseconds
+	RPS          float64 `json:"rps"`
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	ErrorRate    float64 `json:"error_rate"`
 }
 
 type LBMetrics struct {
 	TotalRequests  uint64
 	TotalErrors    uint64
-	TotalLatencyUs uint64 // In microseconds
-	TotalBlocked   uint64   // connections refused by the access rules
-	blockedBy      sync.Map // country code ("" = none) -> *uint64
+	TotalLatencyUs uint64         // In microseconds
+	TotalBlocked   uint64         // connections refused by the access rules
+	blockedBy      sync.Map       // country code ("" = none) -> *uint64
 	clients        *clientTracker // who is hitting the balancer, served or refused
 	domains        *domainTracker // what the DNS queries asked for, and who asked
 
-	mu            sync.RWMutex
-	History       []MetricsSnapshot
-	lastRequests  uint64
-	lastErrors    uint64
-	lastLatency   uint64
-	lastSnapshot  time.Time
-}
-
-type BackendMetrics struct {
-	TotalRequests  uint64
-	TotalErrors    uint64
-	TotalLatencyUs uint64 // In microseconds
-
 	mu           sync.RWMutex
+	History      []MetricsSnapshot
 	lastRequests uint64
 	lastErrors   uint64
 	lastLatency  uint64
 	lastSnapshot time.Time
+}
 
-	currentRPS     float64
-	currentAvgLat  float64
-	currentErrRate float64
+type BackendMetrics struct {
+	TotalRequests    uint64
+	TotalErrors      uint64
+	TotalLatencyUs   uint64 // In microseconds
+	ToBackendBytes   uint64 // client payload forwarded to this node
+	FromBackendBytes uint64 // node payload forwarded to clients
+
+	mu                   sync.RWMutex
+	lastRequests         uint64
+	lastErrors           uint64
+	lastLatency          uint64
+	lastToBackendBytes   uint64
+	lastFromBackendBytes uint64
+	lastSnapshot         time.Time
+
+	currentRPS         float64
+	currentAvgLat      float64
+	currentErrRate     float64
+	currentUploadBps   float64 // bytes per second to node
+	currentDownloadBps float64 // bytes per second from node
 }
 
 type MetricsRegistry struct {
@@ -210,10 +216,12 @@ func (m *MetricsRegistry) GetMetricsForLB(lbID uint) map[string]interface{} {
 	lat := atomic.LoadUint64(&lbm.TotalLatencyUs)
 
 	errRate := float64(0)
-	if req > 0 { errRate = float64(errs) / float64(req) * 100.0 }
+	if req > 0 {
+		errRate = float64(errs) / float64(req) * 100.0
+	}
 
 	out := map[string]interface{}{
-		"total_requests": req,
+		"total_requests":     req,
 		"average_latency_ms": avgMs(lat, req),
 		"error_rate_percent": errRate,
 	}
@@ -252,8 +260,8 @@ func (m *MetricsRegistry) GetMetricsHistoryForLB(lbID uint) []MetricsSnapshot {
 // rate are averaged weighted by each balancer's RPS.
 func (m *MetricsRegistry) GetGlobalMetricsHistory() []MetricsSnapshot {
 	type aggData struct {
-		Timestamp string
-		TotalRPS  float64
+		Timestamp   string
+		TotalRPS    float64
 		WeightedLat float64
 		WeightedErr float64
 	}
@@ -301,6 +309,10 @@ func (m *MetricsRegistry) GetBackendMetrics(backendID uint) map[string]interface
 		"avg_latency_ms": bm.currentAvgLat,
 		"error_rate":     bm.currentErrRate,
 		"total_requests": atomic.LoadUint64(&bm.TotalRequests),
+		"upload_bps":     bm.currentUploadBps,
+		"download_bps":   bm.currentDownloadBps,
+		"upload_bytes":   atomic.LoadUint64(&bm.ToBackendBytes),
+		"download_bytes": atomic.LoadUint64(&bm.FromBackendBytes),
 	}
 }
 
@@ -364,6 +376,8 @@ func (m *MetricsRegistry) StartSnapshotLoop() {
 				req := atomic.LoadUint64(&bm.TotalRequests)
 				errs := atomic.LoadUint64(&bm.TotalErrors)
 				lat := atomic.LoadUint64(&bm.TotalLatencyUs)
+				up := atomic.LoadUint64(&bm.ToBackendBytes)
+				down := atomic.LoadUint64(&bm.FromBackendBytes)
 
 				bm.mu.Lock()
 
@@ -372,10 +386,16 @@ func (m *MetricsRegistry) StartSnapshotLoop() {
 					timeDelta = 5.0
 				}
 				bm.currentRPS, bm.currentAvgLat, bm.currentErrRate = windowStats(req-bm.lastRequests, errs-bm.lastErrors, lat-bm.lastLatency, timeDelta)
+				if timeDelta > 0 {
+					bm.currentUploadBps = float64(up-bm.lastToBackendBytes) / timeDelta
+					bm.currentDownloadBps = float64(down-bm.lastFromBackendBytes) / timeDelta
+				}
 
 				bm.lastRequests = req
 				bm.lastErrors = errs
 				bm.lastLatency = lat
+				bm.lastToBackendBytes = up
+				bm.lastFromBackendBytes = down
 				bm.lastSnapshot = now
 
 				bm.mu.Unlock()
@@ -397,7 +417,9 @@ func (lbm *LBMetrics) topBlocked(n int) []blockedCountry {
 		all = append(all, blockedCountry{k.(string), atomic.LoadUint64(v.(*uint64))})
 		return true
 	})
-	sort.Slice(all, func(i, j int) bool { return all[i].Count > all[j].Count || all[i].Count == all[j].Count && all[i].Country < all[j].Country })
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].Count > all[j].Count || all[i].Count == all[j].Count && all[i].Country < all[j].Country
+	})
 	if len(all) > n {
 		all = all[:n]
 	}

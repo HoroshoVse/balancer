@@ -9,9 +9,49 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestTrackedTCPBytesUpdateBeforeConnectionCloses(t *testing.T) {
+	client, incoming := tcpPair(t)
+	outgoing, server := tcpPair(t)
+	defer client.Close()
+	defer server.Close()
+	var upload, download uint64
+	done := make(chan struct{})
+	go func() {
+		proxyStreamsTracked(incoming, outgoing, time.Hour, &upload, &download)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		incoming.Close()
+		outgoing.Close()
+		<-done
+	})
+	request := bytes.Repeat([]byte("up"), 1024)
+	response := bytes.Repeat([]byte("down"), 1024)
+	client.SetDeadline(time.Now().Add(5 * time.Second))
+	server.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := client.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(request))
+	if _, err := io.ReadFull(server, got); err != nil || !bytes.Equal(got, request) {
+		t.Fatalf("upload read: %v", err)
+	}
+	if _, err := server.Write(response); err != nil {
+		t.Fatal(err)
+	}
+	got = make([]byte, len(response))
+	if _, err := io.ReadFull(client, got); err != nil || !bytes.Equal(got, response) {
+		t.Fatalf("download read: %v", err)
+	}
+	if up, down := atomic.LoadUint64(&upload), atomic.LoadUint64(&download); up != uint64(len(request)) || down != uint64(len(response)) {
+		t.Fatalf("live counters upload=%d download=%d", up, down)
+	}
+}
 
 // tcpPair returns two connected loopback TCP connections.
 func tcpPair(t *testing.T) (net.Conn, net.Conn) {
