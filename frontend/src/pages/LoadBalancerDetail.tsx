@@ -240,7 +240,7 @@ function NodesTable({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void
         {editable && <Link to={`/lbs/${lb.id}/edit`} className="text-sm font-medium text-cobalt hover:text-cobalt-dark">+ Добавить узел</Link>}
       </div>
       <div className="relative overflow-x-auto">
-        <table className="w-full min-w-[760px] border-collapse text-sm">
+        <table className="w-full min-w-[1080px] border-collapse text-sm">
           <thead>
             <tr className="text-left text-xs text-ink-3">
               <th scope="col" className="border-t border-line-soft px-6 py-2.5 font-medium">Узел</th>
@@ -269,9 +269,9 @@ function NodesTable({ lb, onChanged }: { lb: LoadBalancer; onChanged: () => void
                   </td>
                   <td className="border-t border-ground px-3 py-3.5">{b.backup && orderedBackups(lb) && queue.has(b) ? `резерв ${queue.get(b)}` : b.backup ? "резерв" : "основной"}</td>
                   <td className={`border-t border-ground px-3 py-3.5 ${stateText[st].cls}`}>{stateText[st].text}</td>
-                  <td className="border-t border-ground px-3 py-3.5 font-mono">
-                    <span className="block">{formatNumber(b.metrics?.rps ?? 0, (b.metrics?.rps ?? 0) < 10 ? 1 : 0)} запр/с</span>
-                    <span className="block text-xs text-ink-3">↓ {formatMbps(nodeDownloadMbps(b))} · ↑ {formatMbps(nodeUploadMbps(b))} Мбит/с</span>
+                  <td className="whitespace-nowrap border-t border-ground px-3 py-3.5 font-mono">
+                    {formatNumber(b.metrics?.rps ?? 0, (b.metrics?.rps ?? 0) < 10 ? 1 : 0)} запр/с
+                    <span className="ml-3 text-xs text-ink-3">↓ {formatMbps(nodeDownloadMbps(b))} · ↑ {formatMbps(nodeUploadMbps(b))} Мбит/с</span>
                   </td>
                   <td className="border-t border-ground px-3 py-3.5 font-mono">{st === "active" ? `${formatNumber(b.metrics?.avg_latency_ms ?? 0, 1)} мс` : "—"}</td>
                   <td className="border-t border-ground px-3 py-3.5">
@@ -653,37 +653,39 @@ export default function LoadBalancerDetail() {
       </div>
 
       {tab === "overview" && (
-        <div className="flex flex-wrap items-start gap-6">
-          <div className="flex min-w-0 flex-[2_1_560px] flex-col gap-6">
-            <section aria-label="Метрики за 5 минут" className="flex flex-wrap gap-7 rounded-[18px] border border-line bg-white px-6 py-5">
-              <Chart label="Запросы" value={`${formatNumber(last?.rps ?? 0, (last?.rps ?? 0) < 10 ? 1 : 0)}/с`} values={recent.map((s) => s.rps)} color="bg-cobalt" />
-              <Chart label="Задержка" value={`${formatNumber(last?.avg_latency_ms ?? 0, 1)} мс`} values={recent.map((s) => s.avg_latency_ms)} color="bg-ink" />
-              <Chart
-                label="Ошибки"
-                value={`${formatNumber(last?.error_rate ?? 0, 2)} %`}
-                values={recent.map((s) => (s.error_rate > 0 ? s.error_rate : 0.0001))}
-                color="bg-line-strong"
-                colorOf={(i) => (recent[i]?.error_rate > 0 ? "bg-down" : undefined)}
-              />
-            </section>
-            <ClientsCard lb={lb} onChanged={refresh} />
-            <AccessCard lb={lb} />
-            <NodesTable lb={lb} onChanged={refresh} />
-          </div>
-          <div className="flex min-w-0 flex-[1_1_320px] flex-col gap-6">
-            {advice.length > 0 && (
-              <section aria-labelledby="adv-title" className="flex flex-col gap-3.5 rounded-[18px] border border-line bg-white p-6">
-                <h2 id="adv-title" className="font-display text-lg font-semibold tracking-tight">Советы · {advice.length}</h2>
-                {advice.map((a) => <AdviceCard key={a.id} advice={a} lb={lb} onApplied={refresh} />)}
+        <div className="flex flex-col gap-6">
+          <div className="flex flex-wrap items-start gap-6">
+            <div className="flex min-w-0 flex-[2_1_560px] flex-col gap-6">
+              <section aria-label="Метрики за 5 минут" className="flex flex-wrap gap-7 rounded-[18px] border border-line bg-white px-6 py-5">
+                <Chart label="Запросы" value={`${formatNumber(last?.rps ?? 0, (last?.rps ?? 0) < 10 ? 1 : 0)}/с`} values={recent.map((s) => s.rps)} color="bg-cobalt" />
+                <Chart label="Задержка" value={`${formatNumber(last?.avg_latency_ms ?? 0, 1)} мс`} values={recent.map((s) => s.avg_latency_ms)} color="bg-ink" />
+                <Chart
+                  label="Ошибки"
+                  value={`${formatNumber(last?.error_rate ?? 0, 2)} %`}
+                  values={recent.map((s) => (s.error_rate > 0 ? s.error_rate : 0.0001))}
+                  color="bg-line-strong"
+                  colorOf={(i) => (recent[i]?.error_rate > 0 ? "bg-down" : undefined)}
+                />
               </section>
-            )}
-            <section aria-labelledby="sum-title" className="flex flex-col gap-3.5 rounded-[18px] border border-line bg-white p-6">
-              <h2 id="sum-title" className="font-display text-lg font-semibold tracking-tight">Коротко о настройках</h2>
-              <p className="text-sm leading-relaxed text-ink-2">{describe(fromLB(lb))}</p>
-              <Summary lb={lb} />
-              {editable && <Link to={`/lbs/${lb.id}/edit`} className="self-start text-sm font-medium text-cobalt hover:text-cobalt-dark">Изменить настройки →</Link>}
-            </section>
+              <ClientsCard lb={lb} onChanged={refresh} />
+              <AccessCard lb={lb} />
+            </div>
+            <div className="flex min-w-0 flex-[1_1_320px] flex-col gap-6">
+              {advice.length > 0 && (
+                <section aria-labelledby="adv-title" className="flex flex-col gap-3.5 rounded-[18px] border border-line bg-white p-6">
+                  <h2 id="adv-title" className="font-display text-lg font-semibold tracking-tight">Советы · {advice.length}</h2>
+                  {advice.map((a) => <AdviceCard key={a.id} advice={a} lb={lb} onApplied={refresh} />)}
+                </section>
+              )}
+              <section aria-labelledby="sum-title" className="flex flex-col gap-3.5 rounded-[18px] border border-line bg-white p-6">
+                <h2 id="sum-title" className="font-display text-lg font-semibold tracking-tight">Коротко о настройках</h2>
+                <p className="text-sm leading-relaxed text-ink-2">{describe(fromLB(lb))}</p>
+                <Summary lb={lb} />
+                {editable && <Link to={`/lbs/${lb.id}/edit`} className="self-start text-sm font-medium text-cobalt hover:text-cobalt-dark">Изменить настройки →</Link>}
+              </section>
+            </div>
           </div>
+          <NodesTable lb={lb} onChanged={refresh} />
         </div>
       )}
 
