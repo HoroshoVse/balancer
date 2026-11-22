@@ -48,9 +48,14 @@ func TestTrackedTCPBytesUpdateBeforeConnectionCloses(t *testing.T) {
 	if _, err := io.ReadFull(client, got); err != nil || !bytes.Equal(got, response) {
 		t.Fatalf("download read: %v", err)
 	}
-	if up, down := atomic.LoadUint64(&upload), atomic.LoadUint64(&download); up != uint64(len(request)) || down != uint64(len(response)) {
-		t.Fatalf("live counters upload=%d download=%d", up, down)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadUint64(&upload) == uint64(len(request)) && atomic.LoadUint64(&download) == uint64(len(response)) {
+			return
+		}
+		time.Sleep(time.Millisecond)
 	}
+	t.Fatalf("live counters upload=%d download=%d", atomic.LoadUint64(&upload), atomic.LoadUint64(&download))
 }
 
 // tcpPair returns two connected loopback TCP connections.
